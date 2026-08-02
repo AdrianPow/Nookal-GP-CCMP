@@ -12,6 +12,13 @@ Appointments sections) and the UI screens (Case, Payer, Health, Profile).
 
 ## Setup (5 minutes)
 
+**The easy way:** put your key in `nookal_config.json` (see below), then
+double-click `run_diagnostic.command` (macOS) or `run_diagnostic.bat`
+(Windows). It sets up Python, runs the offline tests, checks the key, and
+does a full no-writes rehearsal — then stops and asks before the real run.
+
+The same thing by hand:
+
 ```bash
 pip install -r requirements.txt
 cp config.example.json nookal_config.json
