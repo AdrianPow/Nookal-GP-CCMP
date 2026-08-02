@@ -18,7 +18,7 @@ Design notes
 
 Config file (JSON), default ./nookal_config.json:
     {
-      "api_key":   "YOUR-KEY-HERE",
+      "api_key":   "Dca06bcf-9e7a-04Bc-0DEa-e65e7aAF9A26",
       "base_url":  "https://api.nookal.com/production/v2",
       "audit_log": "nookal_audit.jsonl",
       "http_method": "POST"          // "POST" (form-encoded) or "GET"
