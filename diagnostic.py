@@ -32,6 +32,8 @@ you're done, plus any 'ZZ DIAGNOSTIC' dropdown title phase 3 created.
 Usage:
     pip install requests
     cp config.example.json nookal_config.json   # then paste your API key
+    python3 diagnostic.py --dry-run --yes       # rehearsal: reads only,
+                                                # every write is a no-op
     python3 diagnostic.py                       # all phases, prompts first
     python3 diagnostic.py --yes                 # no prompts
     python3 diagnostic.py --phases 0,1,2
@@ -59,6 +61,10 @@ FAKE_MEDICARE_EXPIRY = "2027-11-30"   # UI shows month/year only — phase 4
                                       # asks you to check what displays.
 
 TEST_FIRST, TEST_LAST, TEST_DOB = "ZZTEST", "APIDIAG", "1990-01-01"
+
+# Stand-in patient id used under --dry-run, where no patient is created but
+# the later phases should still show what they would call.
+DRY_RUN_PID = 0
 
 # A structurally minimal but valid one-page PDF, so phase 8 needs no deps.
 MINIMAL_PDF = (
@@ -100,6 +106,16 @@ def confirm(prompt: str, auto_yes: bool) -> bool:
     if auto_yes:
         return True
     return input(f"{prompt} [y/N] ").strip().lower() == "y"
+
+
+def is_dry(body) -> bool:
+    """True when a write was suppressed by --dry-run.
+
+    Guards every 'the API accepted X' finding: under a rehearsal the call
+    never left the machine, so reporting it as confirmed would be a lie in
+    the report the whole project keys off.
+    """
+    return isinstance(body, dict) and bool(body.get("dry_run"))
 
 
 def get_id(client: NookalClient, body, *keys) -> int | None:
@@ -179,12 +195,18 @@ def phase2_patient(client: NookalClient, rep: Report, auto_yes: bool,
                                   state="QLD", postcode="4000",
                                   country="Australia")
         rep.raw("addPatient (mobile=...)", body)
+        if is_dry(body):
+            rep.finding(f"DRY RUN — no patient created. Using placeholder "
+                        f"patient_id {DRY_RUN_PID} so the remaining phases "
+                        "still print their call sequence; reads against it "
+                        "will come back empty, which is expected.")
+            return DRY_RUN_PID
         pid = get_id(client, body, "patient", "patients", "results", "data")
         rep.finding(f"addPatient accepted home/mobile/work-style fields; "
                     f"patient_id = {pid}")
-    except NookalAPIError as exc:
+    except NookalError as exc:
         rep.say(f"  addPatient with mobile failed: {exc}")
-        rep.raw("failure payload", exc.payload)
+        rep.raw("failure payload", getattr(exc, "payload", None))
         pid = None
     # 2b: does 'phone' (the docs example) work as an edit?
     if pid:
@@ -193,7 +215,7 @@ def phase2_patient(client: NookalClient, rep: Report, auto_yes: bool,
             rep.raw("editPatient (phone=...)", body)
             rep.finding("'phone' parameter was accepted — docs example is "
                         "valid. Check in the UI which slot it landed in.")
-        except NookalAPIError as exc:
+        except NookalError as exc:
             rep.finding(f"'phone' rejected ({exc}) — use home/mobile/work "
                         "only, the docs example is wrong.")
     return pid
@@ -211,6 +233,11 @@ def phase3_case_title(client: NookalClient, rep: Report, auto_yes: bool,
                                    notes="ZZ DIAGNOSTIC case — safe to "
                                          "delete")
             rep.raw("addCase title='GP CCMP'", body)
+            if is_dry(body):
+                rep.finding("DRY RUN — would create a case titled "
+                            f"'{client.CASE_TITLE}'. Rerun without --dry-run "
+                            "to settle the dropdown question.")
+                return None
             case_id = get_id(client, body, "case", "cases", "results",
                              "data")
             rep.finding(f"case created, case_id = {case_id}")
@@ -218,9 +245,9 @@ def phase3_case_title(client: NookalClient, rep: Report, auto_yes: bool,
                        "title 'GP CCMP' matching the EXISTING dropdown "
                        "option (open the dropdown on another case — is "
                        "'GP CCMP' listed once, or twice)?")
-        except NookalAPIError as exc:
+        except NookalError as exc:
             rep.say(f"  addCase failed: {exc}")
-            rep.raw("failure payload", exc.payload)
+            rep.raw("failure payload", getattr(exc, "payload", None))
     if confirm("Also test a NOVEL title (may add junk to the dropdown — "
                "you'll need to delete it in the UI)?", auto_yes):
         client.allow_any_title()
@@ -234,7 +261,7 @@ def phase3_case_title(client: NookalClient, rep: Report, auto_yes: bool,
                        "only, or was it silently replaced? This decides "
                        "whether automated case creation is safe. Delete the "
                        "junk option if it was added.")
-        except NookalAPIError as exc:
+        except NookalError as exc:
             rep.finding(f"novel title REJECTED ({exc}) — the API enforces "
                         "the managed list. Excellent: automation cannot "
                         "pollute the dropdown.")
@@ -244,7 +271,11 @@ def phase3_case_title(client: NookalClient, rep: Report, auto_yes: bool,
 def phase4_medicare(client: NookalClient, rep: Report, auto_yes: bool,
                     pid: int) -> None:
     rep.say("", "PHASE 4 — Medicare details & expiry format")
-    assert medicare_number_valid(FAKE_MEDICARE), "fake number must validate"
+    if not medicare_number_valid(FAKE_MEDICARE):
+        rep.say(f"  SKIPPED: the fake number {FAKE_MEDICARE} no longer "
+                "passes check-digit validation — the client would refuse "
+                "to write it anyway.")
+        return
     if not confirm("Write fake Medicare details to the test patient?",
                    auto_yes):
         return
@@ -252,13 +283,17 @@ def phase4_medicare(client: NookalClient, rep: Report, auto_yes: bool,
         body = client.update_medicare(pid, FAKE_MEDICARE, FAKE_IRN,
                                       FAKE_MEDICARE_EXPIRY)
         rep.raw("updateMedicareDetails", body)
+        if is_dry(body):
+            rep.finding("DRY RUN — Medicare details not written, so there "
+                        "is nothing to check in the Health tab yet.")
+            return
         rep.action(f"Open Health tab for {TEST_FIRST} {TEST_LAST}: number "
                    f"{FAKE_MEDICARE}, IRN {FAKE_IRN}, and what does the "
                    f"expiry show for {FAKE_MEDICARE_EXPIRY} (month/year "
                    "correct)? Is the 'Unverified' toggle set?")
-    except NookalAPIError as exc:
+    except NookalError as exc:
         rep.say(f"  updateMedicareDetails failed: {exc}")
-        rep.raw("failure payload", exc.payload)
+        rep.raw("failure payload", getattr(exc, "payload", None))
 
 
 def phase5_payer(client: NookalClient, rep: Report, auto_yes: bool,
@@ -269,14 +304,19 @@ def phase5_payer(client: NookalClient, rep: Report, auto_yes: bool,
         try:
             body = client.edit_case_payer(pid, 999999,
                                           reference="ZZ DIAG probe")
+            if is_dry(body):
+                rep.finding("DRY RUN — editCasePayer not sent, so the error "
+                            "message that settles payer_id semantics was "
+                            "never returned.")
+                return
             rep.raw("editCasePayer payer_id=999999 (unexpected success!)",
                     body)
             rep.finding("A nonsense payer_id SUCCEEDED — payer_id is not "
                         "validated the way the docs imply. Investigate "
                         "before any production use.")
-        except NookalAPIError as exc:
+        except NookalError as exc:
             rep.finding(f"error text for nonsense payer_id: {exc}")
-            rep.raw("failure payload", exc.payload)
+            rep.raw("failure payload", getattr(exc, "payload", None))
             rep.say("  Read that message: 'payer not found' implies "
                     "payer_id = an existing case-payer link (UI-first, "
                     "manual Add Payer stays); 'invalid payer type' would "
@@ -295,7 +335,7 @@ def phase6_case_shape(client: NookalClient, rep: Report, pid: int) -> None:
         rep.raw(f"getCases patient {pid}", cases)
         if cases and isinstance(cases[0], dict):
             rep.finding(f"case record keys: {sorted(cases[0].keys())}")
-    except NookalAPIError as exc:
+    except NookalError as exc:
         rep.say(f"  getCases failed: {exc}")
     try:
         body = client.call("getAllCases", page=1, page_length=5)
@@ -303,7 +343,7 @@ def phase6_case_shape(client: NookalClient, rep: Report, pid: int) -> None:
         rep.say("  Look for referrer / contact / payer id fields in the "
                 "records above — if present, GP contact IDs can be "
                 "harvested from historical cases into a lookup table.")
-    except NookalAPIError as exc:
+    except NookalError as exc:
         rep.say(f"  getAllCases failed: {exc}")
 
 
@@ -319,7 +359,7 @@ def phase7_redemptions(client: NookalClient, rep: Report,
         rep.raw(f"getServiceRedemptions patient {redemption_pid}", body)
         rep.say("  If this reflects Medicare allocations it beats counting "
                 "appointments; if it's pre-paid class packs, ignore it.")
-    except NookalAPIError as exc:
+    except NookalError as exc:
         rep.say(f"  getServiceRedemptions failed: {exc}")
 
 
@@ -332,10 +372,14 @@ def phase8_upload(client: NookalClient, rep: Report, auto_yes: bool,
         result = client.upload_pdf(pid, MINIMAL_PDF, "ZZ_DIAG_upload",
                                    case_id=case_id)
         rep.raw("upload_pdf (PUT then activate)", result)
-        rep.finding(f"PUT status {result.get('put_status')}; activate "
-                    "response above. If activate succeeded AFTER the PUT, "
-                    "the docs' note is inverted as suspected.")
-    except (NookalError, NookalAPIError) as exc:
+        if is_dry(result.get("register")):
+            rep.finding("DRY RUN — nothing registered or uploaded; the "
+                        "activate-order question is still open.")
+        else:
+            rep.finding(f"PUT status {result.get('put_status')}; activate "
+                        "response above. If activate succeeded AFTER the "
+                        "PUT, the docs' note is inverted as suspected.")
+    except NookalError as exc:
         rep.say(f"  upload (PUT-then-activate) failed: {exc}")
         if confirm("Try the other order (activate BEFORE PUT)?", auto_yes):
             try:
@@ -346,14 +390,14 @@ def phase8_upload(client: NookalClient, rep: Report, auto_yes: bool,
                 rep.raw("upload_pdf (activate then PUT)", result)
                 rep.finding("activate-before-PUT order worked — docs note "
                             "was literal after all.")
-            except (NookalError, NookalAPIError) as exc2:
+            except NookalError as exc2:
                 rep.say(f"  activate-before-PUT also failed: {exc2}")
     try:
         docs = client.get_patient_documents(pid)
         rep.raw("getPatientDocuments", docs)
         rep.action("Open Documents on the test patient: does ZZ_DIAG_upload "
                    "appear, does it open, and is it attached to the case?")
-    except NookalAPIError as exc:
+    except NookalError as exc:
         rep.say(f"  getPatientDocuments failed: {exc}")
 
 
@@ -367,7 +411,7 @@ def phase9_appointments(client: NookalClient, rep: Report,
         rep.raw("getAppointments (status filter)", body)
         rep.finding("appt_status filter accepted (empty result for the "
                     "test patient is expected and fine).")
-    except NookalAPIError as exc:
+    except NookalError as exc:
         rep.say(f"  getAppointments failed: {exc}")
     svc = client._cache.get("services") or []
     if svc and isinstance(svc[0], dict):
@@ -385,7 +429,7 @@ def phase9_appointments(client: NookalClient, rep: Report,
                 rep.finding("service_id filter accepted using the id from "
                             "getServices — service_id and "
                             "appointment_type_id are interchangeable.")
-            except NookalAPIError as exc:
+            except NookalError as exc:
                 rep.finding(f"service_id={sid} rejected: {exc} — the two "
                             "id spaces differ; map them via getServices "
                             "before filtering.")
@@ -404,22 +448,41 @@ def main() -> int:
     ap.add_argument("--redemptions-patient-id", type=int, default=None,
                     help="real patient id with an active CCMP for phase 7")
     ap.add_argument("--config", default="nookal_config.json")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="rehearsal: every WRITE becomes a logged no-op, so "
+                         "nothing is created in the clinic. Read calls still "
+                         "go out, so auth, endpoint names and reference data "
+                         "are confirmed for real.")
     args = ap.parse_args()
 
     wanted = (set(range(10)) if args.phases == "all"
               else {int(p) for p in args.phases.split(",")})
 
     rep = Report(REPORT_PATH)
+    if args.dry_run:
+        rep.say("*** DRY RUN — writes are logged, not sent. Reads still hit "
+                "the live API. ***")
     try:
-        client = NookalClient(NookalConfig.load(args.config), verbose=True)
+        client = NookalClient(NookalConfig.load(args.config),
+                              dry_run=args.dry_run, verbose=True)
     except NookalError as exc:
         rep.say(f"CONFIG ERROR: {exc}")
         return 1
 
-    # sanity: validators still agree with the sample referrals
-    assert medicare_number_valid("4081334278")
-    assert provider_number_valid("0138434F")
-    assert provider_number_valid("228981BX")
+    # The validators must still agree with the sample referrals before we
+    # write anything. Checked rather than asserted: `python -O` strips
+    # asserts, and this is the guard that must never be optimised away.
+    for ok, label in ((medicare_number_valid("4081334278"), "Medicare "
+                       "4081334278"),
+                      (provider_number_valid("0138434F"), "provider "
+                       "0138434F"),
+                      (provider_number_valid("228981BX"), "provider "
+                       "228981BX")):
+        if not ok:
+            rep.say(f"VALIDATOR REGRESSION: sample {label} no longer "
+                    "validates. Refusing to run — fix nookal_client.py "
+                    "first.")
+            return 1
 
     if 0 in wanted and not phase0_auth(client, rep):
         return 1

@@ -1,0 +1,13 @@
+# Local config — contains the live Nookal API key. Never commit.
+nookal_config.json
+
+# Run output
+diagnostic_report.txt
+nookal_audit.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
