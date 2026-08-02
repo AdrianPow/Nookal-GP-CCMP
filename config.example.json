@@ -1,0 +1,6 @@
+{
+  "api_key": "PASTE-YOUR-NOOKAL-API-KEY-HERE",
+  "base_url": "https://api.nookal.com/production/v2",
+  "audit_log": "nookal_audit.jsonl",
+  "http_method": "POST"
+}
