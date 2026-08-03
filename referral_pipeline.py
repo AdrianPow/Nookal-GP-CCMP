@@ -39,8 +39,16 @@ BLOCKED = "blocked"
 
 # MBS default under the CCM arrangements when the referral states no
 # session count: 5 per calendar year (confirmed by the clinic 2026-08-03).
-# Offered as a pre-filled suggestion on the review screen — never written
-# anywhere without a human confirming it.
+#
+# Clinic policy, same date: tracking the remaining entitlement is the
+# patient's responsibility, not the clinic's. So where a referral is silent,
+# 5 is simply used as the cap — if the patient's real entitlement is lower,
+# that is theirs to manage. This is a standing default, not a guess needing
+# careful confirmation.
+#
+# Zero is a different matter and is never acceptable: in Nookal 0 does not
+# mean "no sessions", it means UNLIMITED, which removes the cap entirely
+# rather than setting it to 5.
 DEFAULT_SESSIONS = 5
 
 # Fields a human must have supplied before anything is written to Nookal.
@@ -187,17 +195,19 @@ class CreateResult:
 def payer_instructions(item: ReviewItem) -> dict[str, Any]:
     """What the operator has to type into Add Payer, gathered in one place
     so the manual step is a copy-read rather than a hunt through the PDF."""
-    sessions = item.fields.get("services_count")
+    sessions = item.fields.get("services_count") or DEFAULT_SESSIONS
+    stated = bool(item.fields.get("services_count"))
     return {
         "payer_type": "Medicare",
         "sessions": sessions,
+        "sessions_stated": stated,
         "sessions_warning": (
-            f"NOT STATED on the referral — the MBS default is "
-            f"{DEFAULT_SESSIONS} per calendar year; confirm the entitlement "
-            "before entering. Do NOT leave it at 0: in Nookal, 0 means "
-            "Unlimited."
-            if not sessions else
-            "Never enter 0 — in Nookal that means Unlimited."),
+            f"Enter {sessions}. Never enter 0 — in Nookal that means "
+            "Unlimited, which removes the cap altogether."
+            if stated else
+            f"Not stated on the referral, so use the standard "
+            f"{DEFAULT_SESSIONS}. Never enter 0 — in Nookal that means "
+            "Unlimited, which removes the cap altogether."),
         "referring_gp": item.fields.get("gp_name"),
         "provider_number": item.fields.get("gp_provider_number"),
         "referral_date": item.fields.get("referral_date"),

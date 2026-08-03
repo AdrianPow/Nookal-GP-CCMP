@@ -266,14 +266,12 @@ class Handler(BaseHTTPRequestHandler):
             hint = (f"<div class='note{warn}'>{e(note)}</div>"
                     if note else "")
             if name == "services_count" and not value:
-                # Pre-fill the MBS default, and say that is what it is —
-                # the reviewer confirms it by creating, or corrects it.
+                # Not stated is the normal case, not an exception: the
+                # patient tracks their own remaining entitlement, so the
+                # standard 5 is simply used. No confirmation ceremony.
                 value = DEFAULT_SESSIONS
-                hint = ("<div class='note warn'>Not stated on the referral — "
-                        f"pre-filled with the MBS default of "
-                        f"{DEFAULT_SESSIONS} per calendar year. Confirm "
-                        "before creating. Never enter 0 in Nookal: that "
-                        "means Unlimited.</div>")
+                hint = ("<div class='note'>Not stated on the referral — "
+                        f"using the standard {DEFAULT_SESSIONS}.</div>")
             rows.append(
                 f"<div class='{cls}'><label for='{name}'>{e(label)}</label>"
                 f"<div><input id='{name}' name='{name}' type='{kind}' "
@@ -315,7 +313,9 @@ class Handler(BaseHTTPRequestHandler):
              Case &rarr; Add Payer &rarr; Medicare. {e(warn)}</div>
           <div class='card'><dl>
             <dt>Payer type</dt><dd>Medicare</dd>
-            <dt>Sessions</dt><dd>{e(sessions if sessions else 'not stated')}</dd>
+            <dt>Sessions</dt><dd>{e(sessions)}{
+                '' if payer.get('sessions_stated')
+                else ' <span class="note">(standard — none stated)</span>'}</dd>
             <dt>Referring GP</dt><dd>{e(payer.get('referring_gp') or '—')}</dd>
             <dt>Provider number</dt>
             <dd>{e(payer.get('provider_number') or '—')}</dd>

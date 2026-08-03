@@ -103,31 +103,21 @@ class DetailTests(ServerTestCase):
             self.assertEqual(r.read()[:4], b"%PDF")
             self.assertEqual(r.headers["Content-Type"], "application/pdf")
 
-    def test_missing_session_count_warns_about_unlimited(self):
-        """Roughly half of real referrals state no count, and Sessions=0 in
-        Nookal means Unlimited — the screen has to say so."""
-        self.add(services_count=None)
-        base = self.start()
-        body = self.get(base, "/r/abc")
-        self.assertIn("Not stated on the referral", body)
-        self.assertIn("Unlimited", body)
-
-    def test_missing_session_count_prefills_the_mbs_default(self):
-        """5 per calendar year is the CCM default (clinic-confirmed). It is
-        offered pre-filled and labelled as the default, so the reviewer
-        confirms or corrects it rather than typing it from memory."""
+    def test_missing_session_count_uses_the_standard_five(self):
+        """Clinic policy: the patient tracks their own entitlement, so a
+        silent referral gets the standard 5 without ceremony."""
         self.add(services_count=None)
         base = self.start()
         body = self.get(base, "/r/abc")
         self.assertIn("value='5'", body)
-        self.assertIn("MBS default of 5 per calendar year", body)
+        self.assertIn("using the standard 5", body)
 
     def test_stated_count_is_shown_not_replaced_by_the_default(self):
         self.add(services_count=1)
         base = self.start()
         body = self.get(base, "/r/abc")
         self.assertIn("value='1'", body)
-        self.assertNotIn("MBS default", body)
+        self.assertNotIn("using the standard", body)
 
     def test_stated_session_count_does_not_warn(self):
         self.add(services_count=5)

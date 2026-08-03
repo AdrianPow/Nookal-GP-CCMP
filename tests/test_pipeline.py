@@ -201,17 +201,26 @@ class PayerInstructionTests(ClientTestCase):
         item = make_item(self.tmp.name, services_count=5)
         instructions = payer_instructions(item)
         self.assertEqual(instructions["sessions"], 5)
+        self.assertTrue(instructions["sessions_stated"])
         self.assertIn("Never enter 0", instructions["sessions_warning"])
 
-    def test_warns_loudly_when_the_count_is_unknown(self):
-        """Roughly half of real referrals never state a count."""
+    def test_unstated_count_falls_back_to_the_standard_five(self):
+        """Clinic policy: the patient tracks their own remaining
+        entitlement, so a silent referral just gets the standard 5."""
         instructions = payer_instructions(make_item(self.tmp.name))
-        self.assertIsNone(instructions["sessions"])
-        self.assertIn("NOT STATED", instructions["sessions_warning"])
-        self.assertIn("Unlimited", instructions["sessions_warning"])
-        # The CCM default is offered so the operator is not entering from
-        # memory — but always framed as needing confirmation.
-        self.assertIn("5 per calendar year", instructions["sessions_warning"])
+        self.assertEqual(instructions["sessions"], 5)
+        self.assertFalse(instructions["sessions_stated"])
+        self.assertIn("Not stated", instructions["sessions_warning"])
+
+    def test_zero_is_never_presented_as_acceptable(self):
+        """0 does not mean "no sessions" in Nookal, it means Unlimited —
+        the one value that must never be entered, stated or not."""
+        for item in (make_item(self.tmp.name),
+                     make_item(self.tmp.name, services_count=3)):
+            instructions = payer_instructions(item)
+            self.assertNotEqual(instructions["sessions"], 0)
+            self.assertIn("Never enter 0", instructions["sessions_warning"])
+            self.assertIn("Unlimited", instructions["sessions_warning"])
 
     def test_carries_the_gp_details_across(self):
         item = make_item(self.tmp.name, gp_name="Dr Kym R. Horsnell",
