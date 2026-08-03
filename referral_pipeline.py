@@ -37,6 +37,12 @@ NEEDS_PAYER = "needs_payer"
 DONE = "done"
 BLOCKED = "blocked"
 
+# MBS default under the CCM arrangements when the referral states no
+# session count: 5 per calendar year (confirmed by the clinic 2026-08-03).
+# Offered as a pre-filled suggestion on the review screen — never written
+# anywhere without a human confirming it.
+DEFAULT_SESSIONS = 5
+
 # Fields a human must have supplied before anything is written to Nookal.
 # Everything else is optional: a referral with no Medicare number is normal
 # (it comes off the card at reception), and roughly half state no session
@@ -174,8 +180,10 @@ def payer_instructions(item: ReviewItem) -> dict[str, Any]:
         "payer_type": "Medicare",
         "sessions": sessions,
         "sessions_warning": (
-            "NOT STATED on the referral — check the MBS entitlement before "
-            "entering. Do NOT leave it at 0: in Nookal, 0 means Unlimited."
+            f"NOT STATED on the referral — the MBS default is "
+            f"{DEFAULT_SESSIONS} per calendar year; confirm the entitlement "
+            "before entering. Do NOT leave it at 0: in Nookal, 0 means "
+            "Unlimited."
             if not sessions else
             "Never enter 0 — in Nookal that means Unlimited."),
         "referring_gp": item.fields.get("gp_name"),

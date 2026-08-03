@@ -29,8 +29,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from nookal_client import NookalClient, NookalConfig, NookalError
-from referral_pipeline import (BLOCKED, DONE, NEEDS_PAYER, NEEDS_REVIEW,
-                               Queue, create_in_nookal)
+from referral_pipeline import (BLOCKED, DEFAULT_SESSIONS, DONE, NEEDS_PAYER,
+                               NEEDS_REVIEW, Queue, create_in_nookal)
 
 EDITABLE = [
     ("patient_name", "Patient name", "text"),
@@ -266,9 +266,14 @@ class Handler(BaseHTTPRequestHandler):
             hint = (f"<div class='note{warn}'>{e(note)}</div>"
                     if note else "")
             if name == "services_count" and not value:
+                # Pre-fill the MBS default, and say that is what it is —
+                # the reviewer confirms it by creating, or corrects it.
+                value = DEFAULT_SESSIONS
                 hint = ("<div class='note warn'>Not stated on the referral — "
-                        "check the entitlement. Never enter 0 in Nookal: "
-                        "that means Unlimited.</div>")
+                        f"pre-filled with the MBS default of "
+                        f"{DEFAULT_SESSIONS} per calendar year. Confirm "
+                        "before creating. Never enter 0 in Nookal: that "
+                        "means Unlimited.</div>")
             rows.append(
                 f"<div class='{cls}'><label for='{name}'>{e(label)}</label>"
                 f"<div><input id='{name}' name='{name}' type='{kind}' "

@@ -209,6 +209,9 @@ class PayerInstructionTests(ClientTestCase):
         self.assertIsNone(instructions["sessions"])
         self.assertIn("NOT STATED", instructions["sessions_warning"])
         self.assertIn("Unlimited", instructions["sessions_warning"])
+        # The CCM default is offered so the operator is not entering from
+        # memory — but always framed as needing confirmation.
+        self.assertIn("5 per calendar year", instructions["sessions_warning"])
 
     def test_carries_the_gp_details_across(self):
         item = make_item(self.tmp.name, gp_name="Dr Kym R. Horsnell",

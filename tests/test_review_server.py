@@ -112,6 +112,23 @@ class DetailTests(ServerTestCase):
         self.assertIn("Not stated on the referral", body)
         self.assertIn("Unlimited", body)
 
+    def test_missing_session_count_prefills_the_mbs_default(self):
+        """5 per calendar year is the CCM default (clinic-confirmed). It is
+        offered pre-filled and labelled as the default, so the reviewer
+        confirms or corrects it rather than typing it from memory."""
+        self.add(services_count=None)
+        base = self.start()
+        body = self.get(base, "/r/abc")
+        self.assertIn("value='5'", body)
+        self.assertIn("MBS default of 5 per calendar year", body)
+
+    def test_stated_count_is_shown_not_replaced_by_the_default(self):
+        self.add(services_count=1)
+        base = self.start()
+        body = self.get(base, "/r/abc")
+        self.assertIn("value='1'", body)
+        self.assertNotIn("MBS default", body)
+
     def test_stated_session_count_does_not_warn(self):
         self.add(services_count=5)
         base = self.start()
