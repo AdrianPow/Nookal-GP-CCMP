@@ -1,0 +1,9 @@
+{
+  "user": "admin@yourclinic.com.au",
+  "app_password": "PASTE-16-CHARACTER-APP-PASSWORD-HERE",
+  "label": "Referrals",
+  "host": "imap.gmail.com",
+  "inbox_dir": "inbox",
+  "state_file": "mail_state.json",
+  "poll_seconds": 120
+}

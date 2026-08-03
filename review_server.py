@@ -332,23 +332,54 @@ class ReviewServer(ThreadingHTTPServer):
 
 
 def scan_inbox(queue: Queue, inbox: str) -> int:
-    """Pull any PDF in the inbox that isn't in the queue yet."""
+    """Pull any PDF in the inbox that isn't in the queue yet.
+
+    Deduplicates by content hash as well as path: mail ingestion re-reads
+    the whole mailbox after a state-file loss, and the same referral is
+    sometimes forwarded twice — neither may create a second queue item."""
+    from referral_pipeline import file_sha256
+
     if not os.path.isdir(inbox):
         return 0
-    known = {os.path.abspath(i.pdf_path) for i in queue.all()}
+    items = queue.all()
+    known_paths = {os.path.abspath(i.pdf_path) for i in items}
+    known_hashes = {i.sha256 for i in items if i.sha256}
     added = 0
     for name in sorted(os.listdir(inbox)):
         if not name.lower().endswith(".pdf"):
             continue
         path = os.path.abspath(os.path.join(inbox, name))
-        if path in known:
+        if path in known_paths:
             continue
         try:
-            queue.add_pdf(path)
+            if file_sha256(path) in known_hashes:
+                continue
+            item = queue.add_pdf(path)
+            known_hashes.add(item.sha256)
             added += 1
         except Exception as exc:                       # noqa: BLE001
             print(f"  could not read {name}: {exc}")
     return added
+
+
+def rescan_forever(queue: Queue, inbox: str, interval: int) -> None:
+    """Background thread: keep pulling new referrals in while the server
+    runs, so a forwarded email appears on the screen within a minute or two
+    of mail_ingest saving it — no restart needed."""
+    import threading
+    import time
+
+    def loop() -> None:
+        while True:
+            time.sleep(interval)
+            try:
+                added = scan_inbox(queue, inbox)
+                if added:
+                    print(f"  picked up {added} new referral(s)")
+            except Exception as exc:                   # noqa: BLE001
+                print(f"  inbox rescan failed: {exc}")
+
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def main() -> int:
@@ -357,6 +388,8 @@ def main() -> int:
     ap.add_argument("--inbox", default="inbox",
                     help="folder watched for new referral PDFs")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--rescan", type=int, default=60,
+                    help="seconds between inbox re-scans (0 = only at start)")
     ap.add_argument("--config", default="nookal_config.json")
     ap.add_argument("--dry-run", action="store_true",
                     help="review normally, but make every Nookal write a "
@@ -367,6 +400,8 @@ def main() -> int:
     added = scan_inbox(queue, args.inbox)
     if added:
         print(f"  read {added} new referral(s) from {args.inbox}/")
+    if args.rescan > 0:
+        rescan_forever(queue, args.inbox, args.rescan)
 
     try:
         client = NookalClient(NookalConfig.load(args.config),

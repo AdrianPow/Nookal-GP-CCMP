@@ -15,3 +15,7 @@ venv/
 # Review queue and referral inbox — contains patient data. Never commit.
 queue/
 inbox/
+
+# Mail ingestion — mail_config.json holds the Gmail app password.
+mail_config.json
+mail_state.json

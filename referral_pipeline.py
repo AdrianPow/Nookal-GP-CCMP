@@ -56,6 +56,7 @@ class ReviewItem:
     pdf_path: str
     state: str = NEEDS_REVIEW
     source: str = ""                    # 'digital' or 'ocr'
+    sha256: str = ""                    # content hash, for duplicate PDFs
     pages: int = 0
     received: str = ""
     fields: dict[str, Any] = _field(default_factory=dict)
@@ -81,6 +82,16 @@ class ReviewItem:
                 if level != "ok"]
 
 
+def file_sha256(path: str) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 # --------------------------------------------------------------------------
 # Queue storage
 # --------------------------------------------------------------------------
@@ -95,12 +106,13 @@ class Queue:
 
     def add_pdf(self, pdf_path: str) -> ReviewItem:
         """Extract a referral and put it in the queue for review."""
-        from referral_extract import extract
+        import referral_extract
 
-        referral = extract(pdf_path)
+        referral = referral_extract.extract(pdf_path)
         item = ReviewItem(
             id=uuid.uuid4().hex[:12],
             pdf_path=os.path.abspath(pdf_path),
+            sha256=file_sha256(pdf_path),
             source=referral.source,
             pages=referral.pages,
             received=_dt.datetime.now().isoformat(timespec="seconds"),

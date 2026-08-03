@@ -9,6 +9,10 @@ Appointments sections) and the UI screens (Case, Payer, Health, Profile).
 | `diagnostic.py` | One-shot probe that answers every question the docs left open. Run this FIRST, before any real automation. |
 | `config.example.json` | Copy to `nookal_config.json`, paste your API key. |
 | `probe_endpoints.py` | Finds the real name of an endpoint the docs got wrong. Calls candidates with `patient_id=0`, so nothing is written. |
+| `referral_extract.py` | Reads a referral PDF — text layer where there is one, OCR where there isn't — and returns each field with a confidence flag. |
+| `referral_pipeline.py` | The review queue, and the write sequence into Nookal. Creates patient, Medicare, case and document; never a payer. |
+| `review_server.py` | The review screen. `python3 review_server.py --dry-run` |
+| `mail_ingest.py` | Pulls referral PDFs out of Gmail into `inbox/`. See `SETUP-GMAIL.md`. |
 | `tests/` | Offline suite — runs the whole client against a fake Nookal on localhost. No API key, no network, nothing touched in the clinic. |
 | `FINDINGS.md` | **What the live diagnostic settled.** Read this before changing anything — it is the confirmed behaviour the client is built against. |
 
