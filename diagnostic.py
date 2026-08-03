@@ -399,6 +399,28 @@ def phase6_case_shape(client: NookalClient, rep: Report, pid: int) -> None:
         rep.raw(f"getCases patient {pid}", cases)
         if cases and isinstance(cases[0], dict):
             rep.finding(f"case record keys: {sorted(cases[0].keys())}")
+        # Surface any payer ids plainly — phase 5's real test needs one, and
+        # digging it out of the raw JSON above is needless work.
+        found_payer = False
+        for case in cases or []:
+            if not isinstance(case, dict):
+                continue
+            for payer in case.get("payers") or []:
+                found_payer = True
+                ids = {k: v for k, v in payer.items()
+                       if isinstance(k, str) and "id" in k.lower()} \
+                    if isinstance(payer, dict) else {}
+                rep.finding(f"case {case.get('ID')} has a payer: "
+                            f"ids={ids or payer}")
+                if isinstance(payer, dict):
+                    rep.finding(f"  payer keys: {sorted(payer.keys())}")
+        if not found_payer:
+            rep.say("  No payer on any case. To test whether payers can be "
+                    "automated, add one in the UI (Case -> Add Payer -> "
+                    "Medicare -> Sessions), then rerun this phase.")
+        else:
+            rep.action("Take the payer id above and run: "
+                       f"--phases 5 --patient-id {pid} --payer-id <that id>")
     except NookalError as exc:
         rep.say(f"  getCases failed: {exc}")
     try:
