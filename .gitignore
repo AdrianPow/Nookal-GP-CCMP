@@ -11,3 +11,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+
+# Review queue and referral inbox — contains patient data. Never commit.
+queue/
+inbox/
