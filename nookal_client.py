@@ -172,12 +172,21 @@ CANDIDATES: dict[str, list[str]] = {
     "version":               ["version"],
     "getLocations":          ["getLocations"],
     "getPractitioners":      ["getPractitioners"],
-    "getServices":           ["getServices", "getAppointmentTypes"],
+    # CONFIRMED live 2026-08-03: getServices does not exist; the endpoint is
+    # getAppointmentTypes, and its ServiceCode field carries the Medicare
+    # item number (e.g. "10953" on Medicare EP (BB)).
+    "getServices":           ["getAppointmentTypes", "getServices"],
     "getPatients":           ["getPatients"],
     "searchPatients":        ["searchPatients", "searchPatient"],
     "addPatient":            ["addPatient"],
     "editPatient":           ["editPatient", "updatePatient"],
-    "updateMedicareDetails": ["updateMedicareDetails"],
+    # updateMedicareDetails returned the HTML 404 page live 2026-08-03 — the
+    # name in the printed docs does not exist. Alternates are guesses in
+    # Nookal's observed verb+Entity style; probe_endpoints.py settles it.
+    "updateMedicareDetails": ["updateMedicareDetails", "editPatientMedicare",
+                              "updatePatientMedicare", "editMedicareDetails",
+                              "editMedicare", "updateMedicare",
+                              "addMedicareDetails"],
     "updateDVADetails":      ["updateDVADetails"],
     "getCases":              ["getCases", "getPatientCases"],
     "getAllCases":           ["getAllCases"],
@@ -185,11 +194,17 @@ CANDIDATES: dict[str, list[str]] = {
     "updateCase":            ["updateCase"],
     "editCasePayer":         ["editCasePayer"],
     "addTreatmentNote":      ["addTreatmentNote"],
-    "getPatientDocuments":   ["getPatientDocuments", "getPatientFiles",
+    # CONFIRMED live 2026-08-03: the endpoint is getPatientFiles.
+    "getPatientDocuments":   ["getPatientFiles", "getPatientDocuments",
                               "getFiles"],
     "getDocumentURL":        ["getDocumentURL", "getFileURL", "getFileUrl"],
     "uploadFile":            ["uploadFile"],
-    "activateFile":          ["activateFile"],
+    # activateFile also returned the HTML 404 page live 2026-08-03 — yet the
+    # uploaded files still appeared under getPatientFiles with status "2"
+    # and the right caseID, so activation may not be a step at all.
+    "activateFile":          ["activateFile", "activatePatientFile",
+                              "completeUpload", "activateUpload",
+                              "confirmUpload", "finaliseFile"],
     "getExtras":             ["getExtras", "getAllExtraFields",
                               "getExtraFields"],
     "addExtraValue":         ["addExtraValue", "addPatientExtraValue"],
@@ -213,6 +228,18 @@ _UNKNOWN_METHOD_MARKERS = (
     "invalid method", "no such function", "not found", "does not exist",
     "invalid action", "unknown action", "invalid endpoint",
 )
+
+# Nookal serves a themed HTML 404 page for endpoint names it doesn't know,
+# rather than a JSON error. Confirmed against the live API 2026-08-03:
+# updateMedicareDetails and activateFile both returned this.
+_HTML_404_MARKERS = (
+    "404 page not found", "page that doesn't exist", "hold it right there",
+)
+
+
+def _looks_like_404_page(text: str) -> bool:
+    low = str(text).lower()
+    return any(marker in low for marker in _HTML_404_MARKERS)
 
 
 class NookalClient:
@@ -293,8 +320,15 @@ class NookalClient:
                 details = details.get("errorMessage") \
                     or details.get("message") or json.dumps(details)[:500]
             return str(details)
-        if "_raw_text" in body:
-            return f"non-JSON response: {body['_raw_text'][:200]}"
+        raw = body.get("_raw_text")
+        if raw is not None:
+            if _looks_like_404_page(raw):
+                # Nookal answers an unrecognised endpoint with an HTML 404
+                # page, not a JSON error. Saying "not found" here routes it
+                # into the candidate-name fallback instead of surfacing a
+                # wall of markup as a validation failure.
+                return "not found: Nookal returned its HTML 404 page"
+            return f"non-JSON response: {raw[:200]}"
         return None
 
     def call(self, logical: str, **params: Any) -> dict:

@@ -41,6 +41,20 @@ UNKNOWN_FUNCTION = {
 }
 
 
+# The page Nookal actually serves for an endpoint name it doesn't know —
+# captured verbatim from the live API on 2026-08-03 (updateMedicareDetails).
+NOOKAL_404_PAGE = (
+    "<html>\r\n    <head>\r\n        <title>Hold it right there!</title>\r\n"
+    "    </head>\r\n    <body>\r\n"
+    '        <p><img src="/images/v2.0/404.png" /></p>\r\n'
+    "        <h1>Oh, no you don't.</h1>\r\n"
+    "        <p>Officer Nigel noticed you were trying to escape to a page "
+    "that doesn't exist.</p>\r\n"
+    "        <!--404 Page Not Found-->\r\n"
+    "    </body>\r\n</html>"
+)
+
+
 def success(results: dict | list) -> dict:
     """Nookal's success envelope: {"status":..,"data":{"results":..}}."""
     return {"status": "success", "data": {"results": results}}

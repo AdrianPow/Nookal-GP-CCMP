@@ -9,7 +9,7 @@ from nookal_client import (NookalAPIError, NookalError,  # noqa: E402
                            UnknownMethodError)
 
 from .base import ClientTestCase
-from .fake_nookal import UNKNOWN_FUNCTION, failure, success
+from .fake_nookal import NOOKAL_404_PAGE, UNKNOWN_FUNCTION, failure, success
 
 
 def no_sleep():
@@ -126,32 +126,53 @@ class CandidateFallbackTests(ClientTestCase):
     error being mistaken for a wrong name and masked by a fallback."""
 
     def test_falls_through_to_the_working_name(self):
-        self.fake.route("getServices", UNKNOWN_FUNCTION)
-        self.fake.route("getAppointmentTypes", success({"services": [{"ID": 1}]}))
+        self.fake.route("getAppointmentTypes", UNKNOWN_FUNCTION)
+        self.fake.route("getServices", success({"services": [{"ID": 1}]}))
         client = self.make_client()
         self.assertEqual(client.services(), [{"ID": 1}])
         self.assertEqual(self.fake.sequence(),
-                         [("POST", "getServices"),
-                          ("POST", "getAppointmentTypes")])
+                         [("POST", "getAppointmentTypes"),
+                          ("POST", "getServices")])
 
     def test_resolved_name_is_cached_for_the_session(self):
-        self.fake.route("getServices", UNKNOWN_FUNCTION)
-        self.fake.route("getAppointmentTypes", success({"services": []}))
+        self.fake.route("getAppointmentTypes", UNKNOWN_FUNCTION)
+        self.fake.route("getServices", success({"services": []}))
         client = self.make_client()
         client.services(refresh=True)
         self.fake.reset()
         client.services(refresh=True)
         # Second call must not re-probe the dead name.
-        self.assertEqual(self.fake.sequence(),
-                         [("POST", "getAppointmentTypes")])
-        self.assertEqual(client._resolved["getServices"], "getAppointmentTypes")
+        self.assertEqual(self.fake.sequence(), [("POST", "getServices")])
+        self.assertEqual(client._resolved["getServices"], "getServices")
 
     def test_http_404_counts_as_an_unknown_name(self):
-        self.fake.route("getServices", (404, {}))
-        self.fake.route("getAppointmentTypes", success({"services": []}))
+        self.fake.route("getAppointmentTypes", (404, {}))
+        self.fake.route("getServices", success({"services": []}))
         client = self.make_client()
         client.services()
-        self.assertIn("getAppointmentTypes", self.fake.endpoints())
+        self.assertIn("getServices", self.fake.endpoints())
+
+    def test_html_404_page_counts_as_an_unknown_name(self):
+        """Nookal answers an unknown endpoint with an HTML 404 page, not a
+        JSON error. Confirmed live 2026-08-03 on updateMedicareDetails and
+        activateFile — without this the fallback never fires and the caller
+        gets a wall of markup instead of a usable error."""
+        self.fake.route("getAppointmentTypes", (200, NOOKAL_404_PAGE))
+        self.fake.route("getServices", success({"services": [{"ID": 9}]}))
+        client = self.make_client()
+        self.assertEqual(client.services(), [{"ID": 9}])
+        self.assertEqual(self.fake.sequence(),
+                         [("POST", "getAppointmentTypes"),
+                          ("POST", "getServices")])
+
+    def test_html_404_on_every_candidate_raises_a_readable_error(self):
+        self.fake.default_route = (200, NOOKAL_404_PAGE)
+        client = self.make_client()
+        with self.assertRaises(UnknownMethodError) as ctx:
+            client.services()
+        message = str(ctx.exception)
+        self.assertIn("404", message)
+        self.assertNotIn("<html>", message)   # no markup dumped at the user
 
     def test_validation_error_is_never_masked_by_a_fallback(self):
         """searchPatients rejecting a bad parameter must surface as-is —
@@ -172,7 +193,7 @@ class CandidateFallbackTests(ClientTestCase):
         with self.assertRaises(UnknownMethodError):
             client.get_patient_documents(1)
         self.assertEqual(self.fake.endpoints(),
-                         ["getPatientDocuments", "getPatientFiles", "getFiles"])
+                         ["getPatientFiles", "getPatientDocuments", "getFiles"])
 
     def test_unknown_logical_method_is_a_programming_error(self):
         client = self.make_client()
