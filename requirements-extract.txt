@@ -1,0 +1,5 @@
+# Extraction layer only — the Nookal client itself needs just `requests`.
+pdfplumber>=0.11    # text layer from digital referrals
+pypdf>=5.0          # page images from scanned referrals
+# Also needs the Tesseract binary on the machine:
+#   macOS:  brew install tesseract

@@ -54,9 +54,27 @@ class MedicareNumberTests(unittest.TestCase):
 
 
 class ProviderNumberTests(unittest.TestCase):
+    # Every provider number appearing in the ten sample referrals.
+    REAL = ["0138434F", "228981BX", "040501AW", "420427AA", "4603231X",
+            "571684EA", "057287BW", "4334685H", "062626LW", "480353JB"]
+
     def test_sample_referral_numbers_validate(self):
-        self.assertTrue(provider_number_valid("0138434F"))
-        self.assertTrue(provider_number_valid("228981BX"))
+        for number in self.REAL:
+            with self.subTest(number=number):
+                self.assertTrue(provider_number_valid(number))
+
+    def test_practice_location_value_above_F_is_accepted(self):
+        """Practice-location values run 0-9 then A-Y (no I or O). Capping
+        the alphabet at F silently rejected two valid numbers out of ten
+        real referrals — every practice with a location value above 15."""
+        for number in ("062626LW", "480353JB"):
+            with self.subTest(number=number):
+                self.assertTrue(provider_number_valid(number))
+
+    def test_ambiguous_letters_are_not_valid_locations(self):
+        # I and O are excluded so they cannot be read as 1 and 0.
+        self.assertFalse(provider_number_valid("062626IW"))
+        self.assertFalse(provider_number_valid("062626OW"))
 
     def test_case_and_whitespace_insensitive(self):
         self.assertTrue(provider_number_valid(" 0138434f "))

@@ -63,7 +63,14 @@ def medicare_number_valid(number: str) -> bool:
 
 
 _PROVIDER_CHECK_ALPHABET = "YXWTLKJHFBA"
-_PROVIDER_PLV_ALPHABET = "0123456789ABCDEF"  # practice-location values 0-15
+
+# Practice-location values run 0-9 then A-Y, skipping I and O so they can't
+# be confused with 1 and 0. This was originally written as 0-9A-F, which
+# silently rejected any provider number from a practice with a location
+# value above 15 — two of the ten sample referrals (062626LW, 480353JB)
+# were valid numbers being thrown out. Widened 2026-08-03; all eight
+# previously-known-good numbers still validate.
+_PROVIDER_PLV_ALPHABET = "0123456789ABCDEFGHJKLMNPQRSTUVWXY"
 
 
 def provider_number_valid(number: str) -> bool:
@@ -72,7 +79,9 @@ def provider_number_valid(number: str) -> bool:
     Format: 6-digit stem + practice-location char + check char.
     check = (d1*3 + d2*5 + d3*8 + d4*4 + d5*2 + d6*1 + PLV*6) mod 11
     indexed into "YXWTLKJHFBA".
-    Verified against both sample referrals (0138434F ✓, 228981BX ✓).
+    Verified against every provider number in the ten sample referrals:
+    0138434F, 228981BX, 040501AW, 420427AA, 4603231X, 571684EA, 057287BW,
+    4334685H, 062626LW and 480353JB.
     Provider numbers shorter than 8 chars are left-padded with zeros on the
     stem (some sources print 5-digit stems).
     """
