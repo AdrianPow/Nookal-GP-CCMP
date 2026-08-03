@@ -84,16 +84,38 @@ presigned URL → `setFileActive`.
   folder**. Confirmed end to end: activated + attached → PDF appears in the
   `GP CCMP` folder.
 
-## Payers — staying manual, permanently
+## Payers — manual for now, but NOT proven impossible
 
-`editCasePayer` accepted a `payer_id` of `999999` and returned **success**,
-while `payers` stayed empty. It does not validate its input and did not do
-what it claimed. Combined with the session cap living in the payer wizard —
-where **Sessions = 0 means Unlimited** — payer creation stays in the UI.
-The client will not write payers.
+`editCasePayer` accepted a `payer_id` of `999999` and returned **success**
+while `payers` stayed empty.
 
-Appointments also cannot be linked to a case through the API, so booking
-stays manual too.
+**That probe proves less than it first appeared.** It was written to read
+an error message, not to test the happy path: it targeted a case with no
+payers at all, and the endpoint is named *edit*, not *add*. "Success,
+nothing changed" is exactly what an UPDATE matching zero rows returns. It
+is not evidence the endpoint is broken.
+
+Two questions are genuinely still open:
+
+1. **Can `editCasePayer` update a payer that exists?** Never tested.
+   `diagnostic.py --phases 5 --payer-id <real id>` now does it properly —
+   it snapshots the payers, writes, reads them back, and reports whether
+   anything actually moved.
+2. **Is there an endpoint that CREATES a payer?** Never looked for. Only
+   `editCasePayer` was ever in the candidate list. `probe_endpoints.py` now
+   probes ten plausible names.
+
+What stands regardless of those answers is the risk that makes this field
+different from the others: the session cap lives in the payer, and
+**Sessions = 0 means Unlimited** in Nookal, silently. If the API does turn
+out to support it, automation is still only safe with a positive-integer
+guard that refuses 0, and a read-back of the `payers` array to confirm what
+landed — the same shape as the Medicare check-digit rule.
+
+Until those two probes are run, payer creation stays in the UI.
+
+Appointments separately cannot be linked to a case through the API, so
+booking stays manual regardless.
 
 ## Still open
 

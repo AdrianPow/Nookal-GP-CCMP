@@ -68,6 +68,21 @@ PROBES: list[tuple[str, list[str]]] = [
         "setFileActive",
         "uploadFileComplete",
     ]),
+    ("Case payer — is there any endpoint that CREATES one?", [
+        # editCasePayer exists, but it is an *edit*. Nothing was ever
+        # probed for adding a payer, which is the step that would let the
+        # session cap be automated.
+        "addCasePayer",
+        "createCasePayer",
+        "addPayer",
+        "createPayer",
+        "addPatientPayer",
+        "addCaseFunder",
+        "setCasePayer",
+        "updateCasePayer",
+        "addCasePayers",
+        "editCasePayer",
+    ]),
     ("DVA details — same family, likely the same naming mistake", [
         "updateDVADetails",
         "editPatientDVA",

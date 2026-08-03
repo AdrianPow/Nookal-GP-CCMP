@@ -296,9 +296,73 @@ def phase4_medicare(client: NookalClient, rep: Report, auto_yes: bool,
         rep.raw("failure payload", getattr(exc, "payload", None))
 
 
+def payers_of(client: NookalClient, pid: int) -> dict:
+    """Every payer currently attached to this patient's cases, keyed by
+    case id — used to see whether a write actually changed anything."""
+    out: dict = {}
+    for case in client.get_cases(pid) or []:
+        if isinstance(case, dict):
+            out[str(case.get("ID"))] = case.get("payers")
+    return out
+
+
+def phase5_real_payer(client: NookalClient, rep: Report, auto_yes: bool,
+                      pid: int, payer_id: int, sessions: int | None) -> None:
+    """The test phase 5 always needed: edit a payer that actually exists,
+    then read it back to see whether anything moved.
+
+    The original probe used a nonsense payer_id against a case with no
+    payers at all, so 'success, nothing changed' was the expected result of
+    an UPDATE matching zero rows — not evidence the endpoint is broken.
+    """
+    rep.say("", "PHASE 5 — editCasePayer against a REAL payer  [WRITE]")
+    before = payers_of(client, pid)
+    rep.raw("payers BEFORE", before)
+    if not any(before.values()):
+        rep.say("  STOP: this patient has no payer on any case. Add one in "
+                "the UI first (Case -> Add Payer -> Medicare -> Sessions), "
+                "then rerun with --payer-id.")
+        return
+
+    fields: dict = {"reference": f"ZZ DIAG {dt.datetime.now():%H%M%S}"}
+    if sessions is not None:
+        fields["sessions"] = sessions
+    rep.say(f"  sending editCasePayer payer_id={payer_id} {fields}")
+    if not confirm("This WRITES to a real case payer. Continue?", auto_yes):
+        return
+    try:
+        body = client.edit_case_payer(pid, payer_id, **fields)
+        rep.raw("editCasePayer response", body)
+        if is_dry(body):
+            rep.finding("DRY RUN — nothing sent.")
+            return
+    except NookalError as exc:
+        rep.finding(f"editCasePayer REJECTED it: {exc}")
+        rep.raw("failure payload", getattr(exc, "payload", None))
+        return
+
+    after = payers_of(client, pid)
+    rep.raw("payers AFTER", after)
+    if after != before:
+        rep.finding("THE PAYER CHANGED — editCasePayer does work against a "
+                    "real payer id. Compare the two payer blocks above to "
+                    "see which fields it accepted; that decides how much of "
+                    "the payer step can be automated.")
+    else:
+        rep.finding("Response said success but the payer is byte-identical "
+                    "afterwards. Either the field names are wrong (compare "
+                    "them against the payer keys above) or the endpoint is "
+                    "a no-op. Payer creation stays manual.")
+    rep.action("Open the case in Nookal and confirm the screen agrees with "
+               "the 'payers AFTER' block — especially the session count.")
+
+
 def phase5_payer(client: NookalClient, rep: Report, auto_yes: bool,
                  pid: int) -> None:
     rep.say("", "PHASE 5 — editCasePayer semantics")
+    rep.say("  NOTE: this probe uses a payer_id that does not exist, so a "
+            "'success' here means nothing — an UPDATE matching zero rows "
+            "reports success too. Use --payer-id for the real test.")
     if confirm("Probe editCasePayer with a nonsense payer_id (reads the "
                "error message)?", auto_yes):
         try:
@@ -309,11 +373,11 @@ def phase5_payer(client: NookalClient, rep: Report, auto_yes: bool,
                             "message that settles payer_id semantics was "
                             "never returned.")
                 return
-            rep.raw("editCasePayer payer_id=999999 (unexpected success!)",
-                    body)
-            rep.finding("A nonsense payer_id SUCCEEDED — payer_id is not "
-                        "validated the way the docs imply. Investigate "
-                        "before any production use.")
+            rep.raw("editCasePayer payer_id=999999 (accepted)", body)
+            rep.finding("A nonsense payer_id was ACCEPTED — so the endpoint "
+                        "does not validate the id, and this tells us "
+                        "nothing about whether it works. Rerun with "
+                        "--payer-id of a real payer to find out.")
         except NookalError as exc:
             rep.finding(f"error text for nonsense payer_id: {exc}")
             rep.raw("failure payload", getattr(exc, "payload", None))
@@ -499,6 +563,12 @@ def main() -> int:
     ap.add_argument("--case-id", type=int, default=None,
                     help="attach phase 8's upload to an existing case id "
                          "(without it the file lands outside any case)")
+    ap.add_argument("--payer-id", type=int, default=None,
+                    help="phase 5: edit this REAL payer and read it back, "
+                         "instead of probing a nonsense id")
+    ap.add_argument("--payer-sessions", type=int, default=None,
+                    help="phase 5: session count to try writing to that "
+                         "payer (omit to only touch the reference field)")
     ap.add_argument("--redemptions-patient-id", type=int, default=None,
                     help="real patient id with an active CCMP for phase 7")
     ap.add_argument("--config", default="nookal_config.json")
@@ -557,7 +627,11 @@ def main() -> int:
         if 4 in wanted:
             phase4_medicare(client, rep, args.yes, pid)
         if 5 in wanted:
-            phase5_payer(client, rep, args.yes, pid)
+            if args.payer_id:
+                phase5_real_payer(client, rep, args.yes, pid, args.payer_id,
+                                  args.payer_sessions)
+            else:
+                phase5_payer(client, rep, args.yes, pid)
         if 6 in wanted:
             phase6_case_shape(client, rep, pid)
     if 7 in wanted:
