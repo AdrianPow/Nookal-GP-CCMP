@@ -8,7 +8,9 @@ Appointments sections) and the UI screens (Case, Payer, Health, Profile).
 | `nookal_client.py` | Reusable API client: patient search-or-create, Medicare details, case creation (`GP CCMP`), 3-step PDF upload, session counting, validators, audit log, dry-run. |
 | `diagnostic.py` | One-shot probe that answers every question the docs left open. Run this FIRST, before any real automation. |
 | `config.example.json` | Copy to `nookal_config.json`, paste your API key. |
+| `probe_endpoints.py` | Finds the real name of an endpoint the docs got wrong. Calls candidates with `patient_id=0`, so nothing is written. |
 | `tests/` | Offline suite — runs the whole client against a fake Nookal on localhost. No API key, no network, nothing touched in the clinic. |
+| `FINDINGS.md` | **What the live diagnostic settled.** Read this before changing anything — it is the confirmed behaviour the client is built against. |
 
 ## Setup (5 minutes)
 

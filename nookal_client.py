@@ -561,8 +561,14 @@ class NookalClient:
                    activate_before_put: bool = False,
                    put_retries: int = 3) -> dict:
         """Three-step upload: register metadata -> HTTP PUT to presigned S3
-        URL -> activateFile. Returns {'file_id':..., 'register':...,
+        URL -> setFileActive. Returns {'file_id':..., 'register':...,
         'put_status':..., 'activate':...}.
+
+        CONFIRMED live 2026-08-03: all three steps are required. Skipping
+        activation leaves the file at status "2" — returned by
+        getPatientFiles but invisible in the Documents tab. Passing case_id
+        files it inside that case's auto-created folder; without one it
+        lands at the top level of Documents.
 
         The docs' activateFile note reads inverted ('will fail if the file
         has been uploaded') — activate_before_put=True lets the diagnostic
