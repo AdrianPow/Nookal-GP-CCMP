@@ -363,11 +363,38 @@ def phase7_redemptions(client: NookalClient, rep: Report,
         rep.say(f"  getServiceRedemptions failed: {exc}")
 
 
+def describe_upload(result, docs) -> str | None:
+    """Read the uploaded file's own record back and say plainly whether it
+    landed. CONFIRMED live 2026-08-03: status "1" is active and visible in
+    the Documents tab; status "2" is registered but invisible, which is what
+    an upload that never got activated looks like."""
+    if not isinstance(result, dict) or not isinstance(docs, list):
+        return None
+    file_id = result.get("file_id")
+    match = next((d for d in docs if isinstance(d, dict)
+                  and d.get("ID") == file_id), None)
+    if match is None:
+        return (f"the uploaded file_id {file_id!r} is not in the document "
+                "list at all — the upload did not stick.")
+    status = str(match.get("status"))
+    case_id = match.get("caseID")
+    visible = ("ACTIVE and visible in the Documents tab" if status == "1"
+               else f"status {status} — registered but NOT visible in the UI")
+    attached = (f"attached to case {case_id}" if case_id
+                else "NOT attached to any case (it will sit at the top level "
+                     "of Documents rather than in the case folder)")
+    return f"uploaded file is {visible}, and {attached}."
+
+
 def phase8_upload(client: NookalClient, rep: Report, auto_yes: bool,
                   pid: int, case_id: int | None) -> None:
     rep.say("", "PHASE 8 — three-step file upload")
     if not confirm("Upload a tiny test PDF to the test patient?", auto_yes):
         return
+    if case_id is None:
+        rep.say("  NOTE: no case id available, so the upload will not be "
+                "attached to a case. Pass --case-id to test attachment.")
+    result: dict = {}
     try:
         result = client.upload_pdf(pid, MINIMAL_PDF, "ZZ_DIAG_upload",
                                    case_id=case_id)
@@ -395,8 +422,11 @@ def phase8_upload(client: NookalClient, rep: Report, auto_yes: bool,
     try:
         docs = client.get_patient_documents(pid)
         rep.raw("getPatientDocuments", docs)
+        uploaded = describe_upload(result, docs)
+        if uploaded:
+            rep.finding(uploaded)
         rep.action("Open Documents on the test patient: does ZZ_DIAG_upload "
-                   "appear, does it open, and is it attached to the case?")
+                   "appear, does it open, and is it inside the case folder?")
     except NookalError as exc:
         rep.say(f"  getPatientDocuments failed: {exc}")
 
@@ -466,6 +496,9 @@ def main() -> int:
                     help="comma-separated phase numbers, e.g. 0,1,2")
     ap.add_argument("--patient-id", type=int, default=None,
                     help="reuse an existing ZZTEST patient id")
+    ap.add_argument("--case-id", type=int, default=None,
+                    help="attach phase 8's upload to an existing case id "
+                         "(without it the file lands outside any case)")
     ap.add_argument("--redemptions-patient-id", type=int, default=None,
                     help="real patient id with an active CCMP for phase 7")
     ap.add_argument("--config", default="nookal_config.json")
@@ -516,10 +549,11 @@ def main() -> int:
     if pid is None and wanted & {3, 4, 5, 6, 8, 9}:
         rep.say("", "No test patient available — phases 3-6 and 8-9 "
                 "skipped. Rerun with --patient-id or allow phase 2.")
-    case_id = None
+    case_id = args.case_id
     if pid is not None:
         if 3 in wanted:
-            case_id = phase3_case_title(client, rep, args.yes, pid)
+            # Keep an explicitly passed --case-id if phase 3 makes none.
+            case_id = phase3_case_title(client, rep, args.yes, pid) or case_id
         if 4 in wanted:
             phase4_medicare(client, rep, args.yes, pid)
         if 5 in wanted:

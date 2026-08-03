@@ -183,6 +183,46 @@ class DiagnosticRunTests(ClientTestCase):
         self.assertIn("Authentication failed", self.report_text())
         self.assertEqual(self.writes_attempted(), [])
 
+    # -------------------------------------------------------- upload phase
+
+    def upload_routes(self, status, case_id):
+        """Wire a complete, working three-step upload on the fake."""
+        self.fake.routes_from({
+            "uploadFile": lambda p: success(
+                {"url": self.fake.s3_url(), "file_id": "file_abc"}),
+            "setFileActive": success({"file_id": "file_abc"}),
+            "getPatientFiles": success({"files": [
+                {"ID": "file_abc", "patientID": "5", "caseID": case_id,
+                 "name": "ZZ_DIAG_upload", "status": status},
+            ]}),
+        })
+
+    def test_phase8_reports_an_active_attached_upload(self):
+        self.upload_routes(status="1", case_id="99")
+        result = self.run_diagnostic("--yes", "--patient-id", "5",
+                                     "--case-id", "99", "--phases", "8")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = self.report_text()
+        self.assertIn("ACTIVE and visible", report)
+        self.assertIn("attached to case 99", report)
+        self.assertEqual(self.fake.last_params("uploadFile")["case_id"], "99")
+
+    def test_phase8_flags_a_file_that_never_activated(self):
+        """status 2 is the failure that looks like success — the file is in
+        the API's list but invisible to staff in the Documents tab."""
+        self.upload_routes(status="2", case_id="99")
+        self.run_diagnostic("--yes", "--patient-id", "5", "--case-id", "99",
+                            "--phases", "8")
+        report = self.report_text()
+        self.assertIn("NOT visible in the UI", report)
+
+    def test_phase8_flags_an_unattached_upload(self):
+        self.upload_routes(status="1", case_id=None)
+        self.run_diagnostic("--yes", "--patient-id", "5", "--phases", "8")
+        report = self.report_text()
+        self.assertIn("NOT attached to any case", report)
+        self.assertNotIn("case_id", self.fake.last_params("uploadFile"))
+
     # -------------------------------------------------------------- errors
 
     def test_missing_config_aborts_before_any_call(self):

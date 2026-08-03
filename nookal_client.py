@@ -198,11 +198,12 @@ CANDIDATES: dict[str, list[str]] = {
                               "getFiles"],
     "getDocumentURL":        ["getDocumentURL", "getFileURL", "getFileUrl"],
     "uploadFile":            ["uploadFile"],
-    # CONFIRMED live 2026-08-03: activateFile does not exist; the real name
-    # is setFileActive. Activation IS required — with it skipped, the files
-    # showed up under getPatientFiles with status "2" but never appeared in
-    # the Documents tab. status "2" means registered-but-not-active.
-    "activateFile":          ["setFileActive", "activateFile"],
+    # CONFIRMED live 2026-08-03: activateFile does not exist; setFileActive
+    # works (Nookal echoes the handler as "setFileAsActive"). Activation IS
+    # required — skipped, files sit at status "2" and never appear in the
+    # Documents tab; activated, they flip to status "1" and show up.
+    "activateFile":          ["setFileActive", "setFileAsActive",
+                              "activateFile"],
     "getExtras":             ["getExtras", "getAllExtraFields",
                               "getExtraFields"],
     "addExtraValue":         ["addExtraValue", "addPatientExtraValue"],
@@ -446,7 +447,16 @@ class NookalClient:
                         medicare_irn: str,
                         expiry_date: Optional[str] = None) -> dict:
         """Number and IRN must be supplied together (API rule). Validates the
-        check digit locally first and refuses to send an invalid number."""
+        check digit locally first and refuses to send an invalid number.
+
+        CONFIRMED live 2026-08-03 via updatePatientMedicareDetails: expiry
+        is sent as Y-m-d but Nookal keeps only year and month — 2027-11-30
+        came back as "2027-11" and the Health tab shows 11 / 2027. That
+        matches the card itself, which only prints MM/YY, so extraction
+        never needs to invent a day; any day will do. The record is stored
+        with Verified=0 ("Unverified" in the UI), and the number and IRN are
+        held together as a single Reference, "2123456701-1".
+        """
         if not medicare_number_valid(medicare_no):
             raise NookalError(
                 f"Medicare number {medicare_no!r} fails check-digit "
