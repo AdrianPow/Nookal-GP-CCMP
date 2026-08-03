@@ -180,13 +180,12 @@ CANDIDATES: dict[str, list[str]] = {
     "searchPatients":        ["searchPatients", "searchPatient"],
     "addPatient":            ["addPatient"],
     "editPatient":           ["editPatient", "updatePatient"],
-    # updateMedicareDetails returned the HTML 404 page live 2026-08-03 — the
-    # name in the printed docs does not exist. Alternates are guesses in
-    # Nookal's observed verb+Entity style; probe_endpoints.py settles it.
-    "updateMedicareDetails": ["updateMedicareDetails", "editPatientMedicare",
-                              "updatePatientMedicare", "editMedicareDetails",
-                              "editMedicare", "updateMedicare",
-                              "addMedicareDetails"],
+    # CONFIRMED live 2026-08-03 by probe_endpoints.py: the documented
+    # updateMedicareDetails does not exist. The real name is
+    # updatePatientMedicareDetails — it was the only one of ten candidates
+    # to answer with a validation error rather than the 404 page.
+    "updateMedicareDetails": ["updatePatientMedicareDetails",
+                              "updateMedicareDetails"],
     "updateDVADetails":      ["updateDVADetails"],
     "getCases":              ["getCases", "getPatientCases"],
     "getAllCases":           ["getAllCases"],
@@ -199,12 +198,11 @@ CANDIDATES: dict[str, list[str]] = {
                               "getFiles"],
     "getDocumentURL":        ["getDocumentURL", "getFileURL", "getFileUrl"],
     "uploadFile":            ["uploadFile"],
-    # activateFile also returned the HTML 404 page live 2026-08-03 — yet the
-    # uploaded files still appeared under getPatientFiles with status "2"
-    # and the right caseID, so activation may not be a step at all.
-    "activateFile":          ["activateFile", "activatePatientFile",
-                              "completeUpload", "activateUpload",
-                              "confirmUpload", "finaliseFile"],
+    # CONFIRMED live 2026-08-03: activateFile does not exist; the real name
+    # is setFileActive. Activation IS required — with it skipped, the files
+    # showed up under getPatientFiles with status "2" but never appeared in
+    # the Documents tab. status "2" means registered-but-not-active.
+    "activateFile":          ["setFileActive", "activateFile"],
     "getExtras":             ["getExtras", "getAllExtraFields",
                               "getExtraFields"],
     "addExtraValue":         ["addExtraValue", "addPatientExtraValue"],
@@ -505,9 +503,14 @@ class NookalClient:
                  referrer_id: Optional[int] = None) -> dict:
         """Create a case. Title defaults to CASE_TITLE ('GP CCMP').
 
-        The Title field is a managed dropdown in the UI: any novel string
-        risks creating a new dropdown option clinic-wide, so this method
-        refuses non-default titles unless allow_any_title() was used.
+        CONFIRMED live 2026-08-03: the Title dropdown is built from the
+        titles currently in use, not a curated clinic-wide list, and an
+        API-created case titled 'GP CCMP' matched the existing option
+        exactly — it appeared once, not twice. A novel title is therefore
+        not destructive; it just adds a stray entry that disappears when
+        the case is deleted. The lock stays anyway, because a typo'd title
+        would silently create a second bucket of CCMP cases that no report
+        or filter would pick up.
         Case 'Referrer' is the *marketing-source* field, not the referring
         doctor (that lives on the payer) — hence referrer_id defaults to
         None and should almost always stay None.

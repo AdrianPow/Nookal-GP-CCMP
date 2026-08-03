@@ -1,7 +1,9 @@
 """The three-step document upload: register -> S3 PUT -> activate.
 
-The printed docs' activateFile note reads inverted, so both orderings are
-supported and both are pinned here.
+The docs' activateFile note reads inverted, so both orderings are
+supported and both are pinned here. Confirmed live 2026-08-03: the
+endpoint is setFileActive, and the step is required — skip it and the file
+registers with status "2" but never appears in the Documents tab.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ class UploadTests(ClientTestCase):
         super().setUp()
         self.fake.route("uploadFile", lambda p: success(
             {"url": self.fake.s3_url(), "file_id": 77}))
-        self.fake.route("activateFile", success({"ok": True}))
+        self.fake.route("setFileActive", success({"ok": True}))
 
     def no_sleep(self):
         return mock.patch("nookal_client.time.sleep")
@@ -38,7 +40,7 @@ class UploadTests(ClientTestCase):
         self.assertEqual(self.fake.sequence(),
                          [("POST", "uploadFile"),
                           ("PUT", "/s3/upload"),
-                          ("POST", "activateFile")])
+                          ("POST", "setFileActive")])
 
     def test_file_bytes_reach_the_presigned_url_intact(self):
         client = self.make_client()
@@ -51,13 +53,13 @@ class UploadTests(ClientTestCase):
         client.upload_pdf(1, PDF, "referral", activate_before_put=True)
         self.assertEqual(self.fake.sequence(),
                          [("POST", "uploadFile"),
-                          ("POST", "activateFile"),
+                          ("POST", "setFileActive"),
                           ("PUT", "/s3/upload")])
 
     def test_activate_is_called_once_only(self):
         client = self.make_client()
         client.upload_pdf(1, PDF, "referral")
-        self.assertEqual(self.fake.count("activateFile"), 1)
+        self.assertEqual(self.fake.count("setFileActive"), 1)
 
     def test_case_id_is_forwarded_when_supplied(self):
         client = self.make_client()
@@ -79,7 +81,7 @@ class UploadTests(ClientTestCase):
         client = self.make_client()
         result = client.upload_pdf(1, PDF, "referral")
         self.assertEqual(result["put_status"], 204)
-        self.assertEqual(self.fake.count("activateFile"), 1)
+        self.assertEqual(self.fake.count("setFileActive"), 1)
 
     # ---------------------------------------------------------- failures
 
@@ -93,7 +95,7 @@ class UploadTests(ClientTestCase):
         self.assertEqual(result["put_status"], 200)
         self.assertEqual(self.fake.count("uploadFile"), 3)
         self.assertEqual(self.fake.count("/s3/upload"), 3)
-        self.assertEqual(self.fake.count("activateFile"), 1)
+        self.assertEqual(self.fake.count("setFileActive"), 1)
 
     def test_persistent_put_failure_raises_after_the_retry_budget(self):
         self.fake.put_status = 403
@@ -103,7 +105,7 @@ class UploadTests(ClientTestCase):
                 client.upload_pdf(1, PDF, "referral", put_retries=2)
         self.assertIn("403", str(ctx.exception))
         self.assertEqual(self.fake.count("uploadFile"), 2)
-        self.assertEqual(self.fake.count("activateFile"), 0)
+        self.assertEqual(self.fake.count("setFileActive"), 0)
 
     def test_missing_presigned_url_is_a_clear_error(self):
         self.fake.route("uploadFile", success({"file_id": 77}))
@@ -111,7 +113,7 @@ class UploadTests(ClientTestCase):
         with self.assertRaises(NookalAPIError) as ctx:
             client.upload_pdf(1, PDF, "referral")
         self.assertIn("presigned URL", str(ctx.exception))
-        self.assertEqual(self.fake.count("activateFile"), 0)
+        self.assertEqual(self.fake.count("setFileActive"), 0)
 
     def test_missing_file_id_is_a_clear_error(self):
         self.fake.route("uploadFile",
@@ -132,7 +134,7 @@ class DocumentListTests(ClientTestCase):
     def test_documents_unwrapped_from_any_of_the_known_keys(self):
         for key in ("files", "Files", "documents"):
             with self.subTest(key=key):
-                self.fake.route("getPatientDocuments",
+                self.fake.route("getPatientFiles",
                                 success({key: [{"ID": 1}]}))
                 client = self.make_client()
                 self.assertEqual(client.get_patient_documents(1), [{"ID": 1}])

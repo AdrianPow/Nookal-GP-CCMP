@@ -401,6 +401,18 @@ def phase8_upload(client: NookalClient, rep: Report, auto_yes: bool,
         rep.say(f"  getPatientDocuments failed: {exc}")
 
 
+def appointment_count(client: NookalClient, body) -> int:
+    items = client.extract(body, "appointments", "Appointments", "results")
+    return len(items) if isinstance(items, list) else 0
+
+
+INCONCLUSIVE = (
+    "but the patient has no appointments, so this proves nothing — a "
+    "filter that is silently ignored also returns an empty list. Re-run "
+    "with --patient-id of a real patient who has appointment history."
+)
+
+
 def phase9_appointments(client: NookalClient, rep: Report,
                         pid: int) -> None:
     rep.say("", "PHASE 9 — getAppointments filters")
@@ -409,8 +421,12 @@ def phase9_appointments(client: NookalClient, rep: Report,
                            date_from="2025-01-01",
                            appt_status="Completed", page=1, page_length=10)
         rep.raw("getAppointments (status filter)", body)
-        rep.finding("appt_status filter accepted (empty result for the "
-                    "test patient is expected and fine).")
+        found = appointment_count(client, body)
+        if found:
+            rep.finding(f"appt_status filter accepted and returned {found} "
+                        "completed appointment(s) — the filter is real.")
+        else:
+            rep.finding(f"appt_status filter was accepted, {INCONCLUSIVE}")
     except NookalError as exc:
         rep.say(f"  getAppointments failed: {exc}")
     svc = client._cache.get("services") or []
@@ -426,9 +442,14 @@ def phase9_appointments(client: NookalClient, rep: Report,
                                    date_from="2025-01-01", service_id=sid,
                                    page=1, page_length=5)
                 rep.raw(f"getAppointments service_id={sid}", body)
-                rep.finding("service_id filter accepted using the id from "
-                            "getServices — service_id and "
-                            "appointment_type_id are interchangeable.")
+                found = appointment_count(client, body)
+                if found:
+                    rep.finding(f"service_id={sid} from getServices returned "
+                                f"{found} appointment(s) — service_id and "
+                                "appointment_type_id are interchangeable.")
+                else:
+                    rep.finding(f"service_id={sid} was accepted, "
+                                f"{INCONCLUSIVE}")
             except NookalError as exc:
                 rep.finding(f"service_id={sid} rejected: {exc} — the two "
                             "id spaces differ; map them via getServices "
