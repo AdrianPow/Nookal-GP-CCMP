@@ -77,6 +77,9 @@ class ReviewItem:
     notes: dict[str, str] = _field(default_factory=dict)
     nookal: dict[str, Any] = _field(default_factory=dict)
     message: str = ""
+    # Set by the operator choosing "Create anyway" when the patient already
+    # has a GP CCMP case.
+    allow_duplicate_case: bool = False
 
     # ------------------------------------------------------------ helpers
 
@@ -172,6 +175,30 @@ class Queue:
 
 def _is_dry_run(body: Any) -> bool:
     return isinstance(body, dict) and bool(body.get("dry_run"))
+
+
+def existing_ccmp_cases(client: NookalClient, patient_id: int) -> list[dict]:
+    """Cases already titled GP CCMP on this patient.
+
+    A patient can legitimately be referred again — a new plan each year is
+    normal — so this is not an error. But re-processing a referral that has
+    already been done is far more common than a genuine second referral,
+    and a duplicate case is tedious to unpick. The operator decides.
+
+    getCases returns the title as `caseTitle`; addCase echoes it as `title`.
+    """
+    try:
+        cases = client.get_cases(patient_id) or []
+    except NookalError:
+        return []          # never block a create because a lookup failed
+    found = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        title = case.get("caseTitle") or case.get("title") or ""
+        if str(title).strip() == NookalClient.CASE_TITLE:
+            found.append(case)
+    return found
 
 
 def split_name(full: str) -> tuple[str, str]:
@@ -275,19 +302,38 @@ def _create(client: NookalClient, item: ReviewItem) -> CreateResult:
         }[disposition]
         return CreateResult(False, BLOCKED, explain)
 
-    rehearsal = _is_dry_run(patient)
-    patient_id = DRY_RUN_ID if rehearsal else _patient_id(client, patient)
+    # Ask the client, not the response: a dry run against an EXISTING
+    # patient returns a real record, so inferring it from the payload
+    # missed exactly the case that archived referrals produce.
+    rehearsal = bool(getattr(client, "dry_run", False))
+    patient_id = _patient_id(client, patient)
+    if patient_id is None and rehearsal:
+        patient_id = DRY_RUN_ID          # nothing was created to have an id
     if patient_id is None:
         return CreateResult(False, BLOCKED,
                             "patient created but no id came back — check "
                             "Nookal before retrying, to avoid a duplicate")
+
+    # An existing GP CCMP case usually means this referral has already been
+    # processed. Stop and let the operator confirm rather than quietly
+    # creating a second one.
+    if not item.allow_duplicate_case and not rehearsal:
+        already = existing_ccmp_cases(client, patient_id)
+        if already:
+            ids = ", ".join(str(c.get("ID")) for c in already)
+            return CreateResult(
+                False, BLOCKED,
+                f"this patient already has a {NookalClient.CASE_TITLE} case "
+                f"({ids}). If this referral has already been processed, "
+                "there is nothing to do. If it is a genuinely new referral, "
+                "use Create anyway.")
 
     result = CreateResult(True, NEEDS_PAYER, "", patient_id=patient_id)
     steps: list[str] = []
     if rehearsal:
         steps.append("DRY RUN — nothing was written to Nookal")
     steps.append(f"patient {disposition}"
-                 + ("" if rehearsal else f" ({patient_id})"))
+                 + ("" if patient_id == DRY_RUN_ID else f" ({patient_id})"))
 
     # Medicare — only ever written when the check digit passes.
     number = item.fields.get("medicare_no")
@@ -310,7 +356,8 @@ def _create(client: NookalClient, item: ReviewItem) -> CreateResult:
         result.case_id = (DRY_RUN_ID if _is_dry_run(case)
                           else _case_id(client, case))
         steps.append("case created"
-                     + ("" if rehearsal else f" ({result.case_id})"))
+                     + ("" if result.case_id == DRY_RUN_ID
+                        else f" ({result.case_id})"))
     except NookalError as exc:
         result.ok = False
         result.state = BLOCKED

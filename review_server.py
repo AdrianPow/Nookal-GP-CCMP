@@ -188,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_html(page("Not found", "<h1>Not found</h1>"), 404)
 
         form = self.read_form()
-        if action in ("save", "create"):
+        if action in ("save", "create", "create_anyway"):
             for name, _label, _kind in EDITABLE:
                 value = form.get(name, "")
                 if value:
@@ -204,7 +204,11 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self.queue.save(item)
 
-        if action == "create":
+        if action == "create_anyway":
+            item.allow_duplicate_case = True
+            self.queue.save(item)
+
+        if action in ("create", "create_anyway"):
             client = self.server.client
             if client is None:
                 item.message = ("No Nookal connection — start the server "
@@ -294,6 +298,11 @@ class Handler(BaseHTTPRequestHandler):
                 f"<div><input id='{name}' name='{name}' type='{kind}' "
                 f"value='{e(value)}'>{hint}</div></div>")
 
+        anyway = ""
+        if "already has a" in (item.message or ""):
+            anyway = (f"<button class='plain' type='submit' "
+                      f"formaction='/r/{e(item.id)}/create_anyway'>"
+                      "Create anyway</button>")
         source = {
             "digital": "read directly from the PDF",
             "ocr": "read by OCR from a scan",
@@ -312,6 +321,7 @@ class Handler(BaseHTTPRequestHandler):
             <button class='primary' type='submit'>Create in Nookal</button>
             <button class='plain' type='submit'
                     formaction='/r/{e(item.id)}/save'>Save for later</button>
+            {anyway}
           </form>
         """)
 

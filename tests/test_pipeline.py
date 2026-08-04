@@ -137,8 +137,11 @@ class CreateTests(ClientTestCase):
         self.assertEqual(result.state, NEEDS_PAYER)
         self.assertEqual(result.patient_id, 2521)
         self.assertEqual(result.case_id, 3466)
+        # getCases is the duplicate-case guard reading the patient's
+        # existing cases before anything is written.
+        reads = {"searchPatients", "getCases", "getPatientCases"}
         self.assertEqual(
-            [e for e in self.fake.endpoints() if e != "searchPatients"],
+            [e for e in self.fake.endpoints() if e not in reads],
             ["updatePatientMedicareDetails", "addCase", "uploadFile",
              "/s3/upload", "setFileActive"])
 
