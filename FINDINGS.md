@@ -54,8 +54,8 @@ markup at the caller.
   no report or filter would surface.
 * Creating a case auto-creates a **Documents folder of the same name**.
 * Case records expose a **`payers` array** — empty until a payer is added
-  in the UI, but present, so the session cap can likely be *read back* and
-  checked against the referral.
+  in the UI. It is readable but not writable, which is what makes the
+  post-hoc session-cap check possible.
 * Case `referrerType` holds values like "Other" — it is the marketing
   source, **not** the referring doctor, and carries no contact ID. Building
   a GP lookup table from case history is not possible; the GP has to come
@@ -84,7 +84,7 @@ presigned URL → `setFileActive`.
   folder**. Confirmed end to end: activated + attached → PDF appears in the
   `GP CCMP` folder.
 
-## Payers — created by hand, but readable and probably editable
+## Payers — created by hand, and not editable via the API
 
 Settled 2026-08-04.
 
@@ -141,8 +141,8 @@ What *is* worth building is verification — see below.
 
 Two things follow. The session cap field is **`Sessions_Approved`** — the
 first edit attempt sent `sessions`, a name that does not exist. And
-**Nookal maintains `Sessions_Completed` itself**, which was not the question
-being asked but answers a bigger one: see below.
+**Nookal maintains `Sessions_Completed` itself**, which was not the
+question being asked but answers a bigger one: see the next section.
 
 ## Session counting — Nookal already does it
 
@@ -156,48 +156,33 @@ filters actually filter). Worth confirming against a real patient with
 history before relying on it, but it is a much shorter path than
 appointment counting.
 
-## Payers — the earlier over-read, kept for the record
+## Payers — the risk that made this field different
 
-`editCasePayer` accepted a `payer_id` of `999999` and returned **success**
-while `payers` stayed empty.
-
-**That probe proves less than it first appeared.** It was written to read
-an error message, not to test the happy path: it targeted a case with no
-payers at all, and the endpoint is named *edit*, not *add*. "Success,
-nothing changed" is exactly what an UPDATE matching zero rows returns. It
-is not evidence the endpoint is broken.
-
-Two questions are genuinely still open:
-
-1. **Can `editCasePayer` update a payer that exists?** Never tested.
-   `diagnostic.py --phases 5 --payer-id <real id>` now does it properly —
-   it snapshots the payers, writes, reads them back, and reports whether
-   anything actually moved.
-2. **Is there an endpoint that CREATES a payer?** Never looked for. Only
-   `editCasePayer` was ever in the candidate list. `probe_endpoints.py` now
-   probes ten plausible names.
-
-What stands regardless of those answers is the risk that makes this field
-different from the others: the session cap lives in the payer, and
-**Sessions = 0 means Unlimited** in Nookal, silently. If the API does turn
-out to support it, automation is still only safe with a positive-integer
-guard that refuses 0, and a read-back of the `payers` array to confirm what
-landed — the same shape as the Medicare check-digit rule.
-
-Until those two probes are run, payer creation stays in the UI.
+The session cap lives in the payer, and **Sessions = 0 means Unlimited** in
+Nookal, silently. Since the API cannot write the payer, the mitigation is
+to read it back: `verify_payer()` compares `Sessions_Approved` against what
+the referral said (or the standard 5) and refuses to close a referral until
+they agree. That catches a forgotten payer, one added to the wrong case, a
+mistyped count, and a 0.
 
 Appointments separately cannot be linked to a case through the API, so
 booking stays manual regardless.
 
 ## Still open
 
+Both remaining questions are about counting sessions, and both are now
+lower priority because `Sessions_Completed` on the payer reports usage
+directly. Worth settling only if that turns out to be unreliable:
+
 * **`getServiceRedemptions`** — never run. Needs a real patient with an
-  active CCMP. Decides whether Medicare allocations can be read directly
-  instead of counting appointments.
+  active CCMP.
 * **`appt_status` / `service_id` filters on `getAppointments`** — accepted,
   but the test patient has no appointments, and a silently-ignored filter
   also returns an empty list. Inconclusive until run against a patient with
   history.
+
+* **What `editCasePayer` actually does** — only answerable by Nookal
+  support.
 
 Both are read-only:
 
