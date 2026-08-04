@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 
 from nookal_client import (NookalClient, NookalConfig, NookalError,
@@ -78,16 +79,29 @@ MINIMAL_PDF = (
 
 
 class Report:
+    """Writes to the fixed report path AND a timestamped copy.
+
+    Running one set of phases used to overwrite the previous run's report,
+    so a follow-up run silently destroyed the findings it was building on.
+    The fixed name stays, so "send me diagnostic_report.txt" still means the
+    latest run; the timestamped copy means nothing is ever lost.
+    """
+
     def __init__(self, path: str):
         self.f = open(path, "w", encoding="utf-8")
+        base, ext = os.path.splitext(path)
+        self.archive_path = f"{base}-{dt.datetime.now():%Y%m%d-%H%M%S}{ext}"
+        self.archive = open(self.archive_path, "w", encoding="utf-8")
         self.say(f"Nookal API diagnostic — {dt.datetime.now():%Y-%m-%d %H:%M}")
         self.say("=" * 70)
 
     def say(self, *lines: str) -> None:
         for line in lines:
             print(line)
-            self.f.write(line + "\n")
+            for handle in (self.f, self.archive):
+                handle.write(line + "\n")
         self.f.flush()
+        self.archive.flush()
 
     def raw(self, label: str, obj) -> None:
         text = json.dumps(obj, indent=2, default=str)
@@ -665,7 +679,9 @@ def main() -> int:
             phase9_appointments(client, rep, pid)
 
     rep.say("", "=" * 70,
-            f"Done. Full detail in {REPORT_PATH}.",
+            f"Done. Full detail in {REPORT_PATH} "
+            f"(kept as {rep.archive_path} too, so a later run cannot "
+            "overwrite it).",
             "Resolved endpoint names this session: "
             + json.dumps(client._resolved),
             "CLEAN-UP: delete the ZZTEST APIDIAG patient in the UI, and "
