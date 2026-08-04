@@ -51,6 +51,11 @@ BLOCKED = "blocked"
 # rather than setting it to 5.
 DEFAULT_SESSIONS = 5
 
+# Placeholder id used under dry_run, so a rehearsal can walk the whole flow
+# — including the payer hand-off screen — without writing anything. Real
+# runs never see it.
+DRY_RUN_ID = 0
+
 # Fields a human must have supplied before anything is written to Nookal.
 # Everything else is optional: a referral with no Medicare number is normal
 # (it comes off the card at reception), and roughly half state no session
@@ -165,6 +170,10 @@ class Queue:
 # Names
 # --------------------------------------------------------------------------
 
+def _is_dry_run(body: Any) -> bool:
+    return isinstance(body, dict) and bool(body.get("dry_run"))
+
+
 def split_name(full: str) -> tuple[str, str]:
     """'Linda May Kolb' -> ('Linda May', 'Kolb'). The last word is the
     surname; everything before it is given names, which is what Nookal's
@@ -266,14 +275,19 @@ def _create(client: NookalClient, item: ReviewItem) -> CreateResult:
         }[disposition]
         return CreateResult(False, BLOCKED, explain)
 
-    patient_id = _patient_id(client, patient)
+    rehearsal = _is_dry_run(patient)
+    patient_id = DRY_RUN_ID if rehearsal else _patient_id(client, patient)
     if patient_id is None:
         return CreateResult(False, BLOCKED,
                             "patient created but no id came back — check "
                             "Nookal before retrying, to avoid a duplicate")
 
     result = CreateResult(True, NEEDS_PAYER, "", patient_id=patient_id)
-    steps: list[str] = [f"patient {disposition} ({patient_id})"]
+    steps: list[str] = []
+    if rehearsal:
+        steps.append("DRY RUN — nothing was written to Nookal")
+    steps.append(f"patient {disposition}"
+                 + ("" if rehearsal else f" ({patient_id})"))
 
     # Medicare — only ever written when the check digit passes.
     number = item.fields.get("medicare_no")
@@ -293,8 +307,10 @@ def _create(client: NookalClient, item: ReviewItem) -> CreateResult:
             patient_id,
             referral_date=item.fields.get("referral_date"),
             notes=format_case_notes(_notes_payload(item)))
-        result.case_id = _case_id(client, case)
-        steps.append(f"case created ({result.case_id})")
+        result.case_id = (DRY_RUN_ID if _is_dry_run(case)
+                          else _case_id(client, case))
+        steps.append("case created"
+                     + ("" if rehearsal else f" ({result.case_id})"))
     except NookalError as exc:
         result.ok = False
         result.state = BLOCKED

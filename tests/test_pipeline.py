@@ -184,6 +184,25 @@ class CreateTests(ClientTestCase):
                          "updatePatientMedicareDetails"):
             self.assertEqual(self.fake.count(endpoint), 0)
 
+    def test_dry_run_completes_the_whole_flow_for_a_new_patient(self):
+        """A rehearsal has to reach the payer hand-off, or it cannot be used
+        to show anyone the process. Before this, a dry run stopped at
+        "patient created but no id came back"."""
+        self.routes(exact=[], fuzzy=[])          # nobody matches: creates
+        result = create_in_nookal(self.make_client(dry_run=True),
+                                  make_item(self.tmp.name))
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(result.state, NEEDS_PAYER)
+        self.assertIn("DRY RUN", result.message)
+        self.assertIn("case created", result.message)
+        self.assertEqual(self.fake.count("addPatient"), 0)
+
+    def test_dry_run_does_not_print_placeholder_ids_as_if_real(self):
+        self.routes(exact=[], fuzzy=[])
+        result = create_in_nookal(self.make_client(dry_run=True),
+                                  make_item(self.tmp.name))
+        self.assertNotIn("(0)", result.message)
+
     # -------------------------------------------------------- queue effects
 
     def test_success_moves_the_item_to_needs_payer(self):
