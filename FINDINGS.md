@@ -100,18 +100,29 @@ evidence.
 `patient_id` and `payer_id`, which is why it looked like a silent no-op —
 the call was simply incomplete.
 
-**It still does not write.** With a valid `case_id` (3466), a valid
-`payer_id` (962) and Nookal's own field names, it returned `success` and
-the payer came back byte-identical. `Reference` did not change either —
-a free-text field, with a name read directly off the record, and no
-validation to fail. Three attempts, each more correct than the last, all
-no-ops. Treat `editCasePayer` as unusable.
+**It still does not write.** Four attempts, every one returning `success`
+and changing nothing:
+
+| `case_id` | `payer_id` | Reading of `payer_id` | Result |
+|---|---|---|---|
+| absent | 999999 | link | rejected: "Patient ID \| Case ID missing" |
+| 3466 | 962 | the real link on that case | no change |
+| 3466 | 962 | with Nookal's own field names | no change |
+| 3469 (empty case) | 3 | payer *type*, to attach one | no payer appeared |
+
+`Reference` never moved either — free text, name read straight off the
+record, nothing to fail validation. Both readings of `payer_id` were tried,
+against a case that had a payer and a case that had none.
+
+**Treat `editCasePayer` as unusable.** We cannot say what it does; we can
+say that nothing we can construct makes it do anything observable. The only
+cheap avenue left is asking Nookal support directly what it does and what
+parameters it expects — worth an email, not more probing.
 
 **This matters less than it looks.** Editing a payer is only valuable if
 creating one is automated, and creating one is impossible. By the time an
 operator is in the Add Payer wizard typing the session count, there is
-nothing left for an edit call to save. The payer step is manual end to
-end, and further probing has poor expected value.
+nothing left for an edit call to save.
 
 What *is* worth building is verification — see below.
 
