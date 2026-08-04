@@ -321,7 +321,8 @@ def payers_of(client: NookalClient, pid: int) -> dict:
 
 
 def phase5_real_payer(client: NookalClient, rep: Report, auto_yes: bool,
-                      pid: int, payer_id: int, sessions: int | None) -> None:
+                      pid: int, case_id: int | None, payer_id: int,
+                      sessions: int | None) -> None:
     """The test phase 5 always needed: edit a payer that actually exists,
     then read it back to see whether anything moved.
 
@@ -338,14 +339,23 @@ def phase5_real_payer(client: NookalClient, rep: Report, auto_yes: bool,
                 "then rerun with --payer-id.")
         return
 
-    fields: dict = {"reference": f"ZZ DIAG {dt.datetime.now():%H%M%S}"}
+    if case_id is None:
+        rep.say("  STOP: --case-id is required. editCasePayer answers 'One "
+                "of Patient ID | Case ID is missing' without it, which is "
+                "why the first attempt at this looked like a silent no-op.")
+        return
+
+    # Nookal's own field names, read off a real payer in phase 6 — not the
+    # lowercase guesses the first attempt used.
+    fields: dict = {"Reference": f"ZZ DIAG {dt.datetime.now():%H%M%S}"}
     if sessions is not None:
-        fields["sessions"] = sessions
-    rep.say(f"  sending editCasePayer payer_id={payer_id} {fields}")
+        fields[client.PAYER_SESSIONS] = sessions
+    rep.say(f"  sending editCasePayer case_id={case_id} "
+            f"payer_id={payer_id} {fields}")
     if not confirm("This WRITES to a real case payer. Continue?", auto_yes):
         return
     try:
-        body = client.edit_case_payer(pid, payer_id, **fields)
+        body = client.edit_case_payer(pid, case_id, payer_id, **fields)
         rep.raw("editCasePayer response", body)
         if is_dry(body):
             rep.finding("DRY RUN — nothing sent.")
@@ -373,37 +383,31 @@ def phase5_real_payer(client: NookalClient, rep: Report, auto_yes: bool,
 
 def phase5_payer(client: NookalClient, rep: Report, auto_yes: bool,
                  pid: int) -> None:
+    """No --payer-id given, so there is nothing to edit. Rather than probe a
+    question that is already answered, say what is known and what to run.
+
+    Settled live on 2026-08-04:
+      * No endpoint creates a payer. All nine plausible add-names returned
+        Nookal's 404 page; only editCasePayer exists.
+      * editCasePayer requires case_id — without it the API answers "One of
+        Patient ID | Case ID is missing". The first attempt at this omitted
+        case_id, which is why it looked like a silent no-op.
+      * The session cap field is Sessions_Approved, and Nookal maintains
+        Sessions_Completed itself.
+    """
     rep.say("", "PHASE 5 — editCasePayer semantics")
-    rep.say("  NOTE: this probe uses a payer_id that does not exist, so a "
-            "'success' here means nothing — an UPDATE matching zero rows "
-            "reports success too. Use --payer-id for the real test.")
-    if confirm("Probe editCasePayer with a nonsense payer_id (reads the "
-               "error message)?", auto_yes):
-        try:
-            body = client.edit_case_payer(pid, 999999,
-                                          reference="ZZ DIAG probe")
-            if is_dry(body):
-                rep.finding("DRY RUN — editCasePayer not sent, so the error "
-                            "message that settles payer_id semantics was "
-                            "never returned.")
-                return
-            rep.raw("editCasePayer payer_id=999999 (accepted)", body)
-            rep.finding("A nonsense payer_id was ACCEPTED — so the endpoint "
-                        "does not validate the id, and this tells us "
-                        "nothing about whether it works. Rerun with "
-                        "--payer-id of a real payer to find out.")
-        except NookalError as exc:
-            rep.finding(f"error text for nonsense payer_id: {exc}")
-            rep.raw("failure payload", getattr(exc, "payload", None))
-            rep.say("  Read that message: 'payer not found' implies "
-                    "payer_id = an existing case-payer link (UI-first, "
-                    "manual Add Payer stays); 'invalid payer type' would "
-                    "imply it can attach payers.")
-    rep.action("For the definitive answer: add a Medicare payer to the "
-               "diagnostic case in the UI (Add Payer → Medicare → Sessions "
-               "→ save), then rerun --phases 6 and look for a payer id in "
-               "getCases; then rerun 5 with that id to see if reference/"
-               "expiry/referrer_id write through.")
+    rep.finding("A payer cannot be CREATED through the API — nine candidate "
+                "names were probed and only editCasePayer exists. Adding "
+                "the payer stays a manual step in the UI.")
+    rep.finding("editCasePayer requires case_id as well as patient_id and "
+                "payer_id. Omitting it returns 'One of Patient ID | Case ID "
+                "is missing'.")
+    rep.say("  To test whether an EXISTING payer can be edited, add one in "
+            "the UI, then:")
+    rep.say(f"    --phases 6 --patient-id {pid}          # prints the "
+            "payer id")
+    rep.say(f"    --phases 5 --patient-id {pid} --case-id <case> "
+            "--payer-id <payer> --payer-sessions 3")
 
 
 def phase6_case_shape(client: NookalClient, rep: Report, pid: int) -> None:
@@ -428,6 +432,12 @@ def phase6_case_shape(client: NookalClient, rep: Report, pid: int) -> None:
                             f"ids={ids or payer}")
                 if isinstance(payer, dict):
                     rep.finding(f"  payer keys: {sorted(payer.keys())}")
+                    approved, completed = client.payer_sessions(payer)
+                    if approved is not None or completed is not None:
+                        rep.finding(f"  sessions approved={approved} "
+                                    f"completed={completed} — Nookal tracks "
+                                    "usage itself, so counting appointments "
+                                    "may be unnecessary.")
         if not found_payer:
             rep.say("  No payer on any case. To test whether payers can be "
                     "automated, add one in the UI (Case -> Add Payer -> "
@@ -664,8 +674,8 @@ def main() -> int:
             phase4_medicare(client, rep, args.yes, pid)
         if 5 in wanted:
             if args.payer_id:
-                phase5_real_payer(client, rep, args.yes, pid, args.payer_id,
-                                  args.payer_sessions)
+                phase5_real_payer(client, rep, args.yes, pid, case_id,
+                                  args.payer_id, args.payer_sessions)
             else:
                 phase5_payer(client, rep, args.yes, pid)
         if 6 in wanted:

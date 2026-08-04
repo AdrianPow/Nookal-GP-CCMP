@@ -84,7 +84,54 @@ presigned URL → `setFileActive`.
   folder**. Confirmed end to end: activated + attached → PDF appears in the
   `GP CCMP` folder.
 
-## Payers — manual for now, but NOT proven impossible
+## Payers — created by hand, but readable and probably editable
+
+Settled 2026-08-04.
+
+**No endpoint creates a payer.** Nine plausible names (`addCasePayer`,
+`createCasePayer`, `addPayer`, `createPayer`, `addPatientPayer`,
+`addCaseFunder`, `setCasePayer`, `updateCasePayer`, `addCasePayers`) all
+returned Nookal's HTML 404 page. Only `editCasePayer` exists. **Adding the
+payer stays a manual step in the UI** — that part is now settled on
+evidence.
+
+**`editCasePayer` requires `case_id`.** Probed without one it answers
+`"One of Patient ID | Case ID is missing"`. The first attempt sent only
+`patient_id` and `payer_id`, which is why it looked like a silent no-op —
+the call was simply incomplete. Whether it can edit a real payer is still
+open, but the earlier "it doesn't work" conclusion was wrong.
+
+**A payer record looks like this** (read back through `getCases`):
+
+```json
+{
+  "ID": "962",              "payer": "Medicare",
+  "Sessions_Approved": "5", "Sessions_Completed": "0",
+  "ReferralDate": "0000-00-00", "ExpiryDate": null,
+  "Reference": "", "Notes": "", "Status": "1",
+  "DateOfInjury": null, "budget": "0.00",
+  "caseManager": "", "referrer": ""
+}
+```
+
+Two things follow. The session cap field is **`Sessions_Approved`** — the
+first edit attempt sent `sessions`, a name that does not exist. And
+**Nookal maintains `Sessions_Completed` itself**, which was not the question
+being asked but answers a bigger one: see below.
+
+## Session counting — Nookal already does it
+
+`Sessions_Completed` on the payer means the number of used sessions can be
+**read**, rather than derived by counting appointments client-side and
+hoping the filters work.
+
+That largely retires the open phase 7 and phase 9 questions
+(`getServiceRedemptions`, and whether the `appt_status` / `service_id`
+filters actually filter). Worth confirming against a real patient with
+history before relying on it, but it is a much shorter path than
+appointment counting.
+
+## Payers — the earlier over-read, kept for the record
 
 `editCasePayer` accepted a `payer_id` of `999999` and returned **success**
 while `payers` stayed empty.

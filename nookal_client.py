@@ -554,12 +554,44 @@ class NookalClient:
         return self.call("updateCase", patient_id=patient_id,
                          case_id=case_id, **fields)
 
-    def edit_case_payer(self, patient_id: int, payer_id: int,
+    # Field names on a case payer, taken from a real payer read back through
+    # getCases on 2026-08-04. The capitalisation is Nookal's.
+    PAYER_SESSIONS = "Sessions_Approved"
+    PAYER_COMPLETED = "Sessions_Completed"
+
+    def edit_case_payer(self, patient_id: int, case_id: int, payer_id: int,
                         **fields: Any) -> dict:
-        """Semantics of payer_id are unconfirmed (payer type vs existing
-        link) — see diagnostic phase 5 before using in production."""
+        """Edit an EXISTING case payer. There is no endpoint to create one —
+        all nine plausible add-names returned Nookal's 404 page on
+        2026-08-04, so the payer itself is still added by hand in the UI.
+
+        `case_id` is required: probing with it absent returned "One of
+        Patient ID | Case ID is missing", which is why the first attempt at
+        this appeared to do nothing.
+
+        Field names are Nookal's own, e.g. Sessions_Approved — see
+        PAYER_SESSIONS.
+        """
         return self.call("editCasePayer", patient_id=patient_id,
-                         payer_id=payer_id, **fields)
+                         case_id=case_id, payer_id=payer_id, **fields)
+
+    @staticmethod
+    def payer_sessions(payer: dict) -> tuple[Optional[int], Optional[int]]:
+        """(approved, completed) off a payer record, as integers.
+
+        Nookal tracks Sessions_Completed itself, so the sessions-used
+        question may not need appointment counting at all.
+        """
+        def as_int(value: Any) -> Optional[int]:
+            try:
+                return int(str(value).strip())
+            except (TypeError, ValueError):
+                return None
+
+        if not isinstance(payer, dict):
+            return None, None
+        return (as_int(payer.get(NookalClient.PAYER_SESSIONS)),
+                as_int(payer.get(NookalClient.PAYER_COMPLETED)))
 
     # ---------------------------------------------------------- documents
 
