@@ -78,17 +78,33 @@ class Referral:
 # Text acquisition
 # --------------------------------------------------------------------------
 
-def read_text(path: str) -> tuple[str, str, int]:
-    """Return (text, source, page_count). Falls back to OCR when needed."""
-    import pdfplumber
+class OcrUnavailable(RuntimeError):
+    """Tesseract is not installed, so a scanned referral cannot be read."""
 
-    with pdfplumber.open(path) as pdf:
-        pages = len(pdf.pages)
-        parts = [(p.extract_text() or "") for p in pdf.pages]
-    text = "\n".join(parts)
+
+def read_text(path: str) -> tuple[str, str, int]:
+    """Return (text, source, page_count).
+
+    Uses pypdf, which has no dependencies at all. pdfplumber was used
+    originally, but it pulls in pdfminer.six -> cryptography, which needs a
+    Rust toolchain and fails to build on a stock Mac. Checked against the
+    ten sample referrals: both libraries extracted every field identically.
+
+    A scanned referral with no OCR installed comes back as
+    'ocr_unavailable' rather than raising, so it still reaches the review
+    queue for someone to type in by hand.
+    """
+    from pypdf import PdfReader
+
+    reader = PdfReader(path)
+    pages = len(reader.pages)
+    text = "\n".join((p.extract_text() or "") for p in reader.pages)
     if pages and len(text) / pages >= MIN_CHARS_PER_PAGE:
         return text, "digital", pages
-    return ocr_pdf(path), "ocr", pages
+    try:
+        return ocr_pdf(path), "ocr", pages
+    except OcrUnavailable:
+        return "", "ocr_unavailable", pages
 
 
 def ocr_pdf(path: str) -> str:
@@ -103,14 +119,29 @@ def ocr_pdf(path: str) -> str:
     reader = PdfReader(path)
     with tempfile.TemporaryDirectory() as tmp:
         for n, page in enumerate(reader.pages):
-            images = list(page.images)
+            try:
+                images = list(page.images)
+            except ImportError as exc:
+                # pypdf needs Pillow to pull page images out. Without it the
+                # whole inbox scan would die on the first scanned referral,
+                # so treat it the same as a missing OCR binary.
+                raise OcrUnavailable(
+                    "Pillow is not installed, so scanned pages cannot be "
+                    "read: pip install -r requirements-extract.txt"
+                ) from exc
             if not images:
                 continue
             src = f"{tmp}/page{n}"
             with open(src, "wb") as f:
                 f.write(images[0].data)
-            proc = subprocess.run(["tesseract", src, "-"],
-                                  capture_output=True, text=True)
+            try:
+                proc = subprocess.run(["tesseract", src, "-"],
+                                      capture_output=True, text=True)
+            except FileNotFoundError as exc:
+                raise OcrUnavailable(
+                    "Tesseract is not installed — scanned referrals cannot "
+                    "be read until it is. Digital referrals are unaffected."
+                ) from exc
             out.append(proc.stdout)
     return "\n".join(out)
 

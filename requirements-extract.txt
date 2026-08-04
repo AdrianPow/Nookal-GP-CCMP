@@ -1,5 +1,16 @@
 # Extraction layer only — the Nookal client itself needs just `requests`.
-pdfplumber>=0.11    # text layer from digital referrals
-pypdf>=5.0          # page images from scanned referrals
-# Also needs the Tesseract binary on the machine:
+#
+# Deliberately minimal. pdfplumber was used originally but pulls in
+# pdfminer.six -> cryptography, which needs a Rust toolchain and fails to
+# build on a stock Mac. pypdf extracted every field identically across the
+# ten sample referrals, and has no dependencies of its own.
+pypdf>=5.0
+
+# Only needed to pull page images out of scanned referrals for OCR. Ships
+# as a prebuilt wheel, so nothing compiles.
+pillow>=10.0
+
+# Scanned referrals also need the Tesseract binary. Without it — or without
+# Pillow — they still reach the review queue flagged for manual entry, and
+# digital referrals are unaffected.
 #   macOS:  brew install tesseract

@@ -294,8 +294,13 @@ class Handler(BaseHTTPRequestHandler):
                 f"<div><input id='{name}' name='{name}' type='{kind}' "
                 f"value='{e(value)}'>{hint}</div></div>")
 
-        source = ("read directly from the PDF" if item.source == "digital"
-                  else "read by OCR from a scan")
+        source = {
+            "digital": "read directly from the PDF",
+            "ocr": "read by OCR from a scan",
+            "ocr_unavailable": "a scan, and OCR is not installed — install "
+                               "Tesseract (brew install tesseract) or type "
+                               "the fields in below",
+        }.get(item.source, item.source)
         return page(item.display_name, f"""
           <a class='back' href='/'>&larr; All referrals</a>
           {banner}
