@@ -98,8 +98,22 @@ evidence.
 **`editCasePayer` requires `case_id`.** Probed without one it answers
 `"One of Patient ID | Case ID is missing"`. The first attempt sent only
 `patient_id` and `payer_id`, which is why it looked like a silent no-op —
-the call was simply incomplete. Whether it can edit a real payer is still
-open, but the earlier "it doesn't work" conclusion was wrong.
+the call was simply incomplete.
+
+**It still does not write.** With a valid `case_id` (3466), a valid
+`payer_id` (962) and Nookal's own field names, it returned `success` and
+the payer came back byte-identical. `Reference` did not change either —
+a free-text field, with a name read directly off the record, and no
+validation to fail. Three attempts, each more correct than the last, all
+no-ops. Treat `editCasePayer` as unusable.
+
+**This matters less than it looks.** Editing a payer is only valuable if
+creating one is automated, and creating one is impossible. By the time an
+operator is in the Add Payer wizard typing the session count, there is
+nothing left for an edit call to save. The payer step is manual end to
+end, and further probing has poor expected value.
+
+What *is* worth building is verification — see below.
 
 **A payer record looks like this** (read back through `getCases`):
 

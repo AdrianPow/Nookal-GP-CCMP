@@ -30,7 +30,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from nookal_client import NookalClient, NookalConfig, NookalError
 from referral_pipeline import (BLOCKED, DEFAULT_SESSIONS, DONE, NEEDS_PAYER,
-                               NEEDS_REVIEW, Queue, create_in_nookal)
+                               NEEDS_REVIEW, Queue, create_in_nookal,
+                               verify_payer)
 
 EDITABLE = [
     ("patient_name", "Patient name", "text"),
@@ -213,7 +214,21 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 create_in_nookal(client, item, queue=self.queue)
         elif action == "done":
-            item.state = DONE
+            # Don't take "I added it" on trust — read the payer back. This
+            # is the only check on the one step the API cannot write, and
+            # Sessions=0 (Unlimited) is invisible otherwise.
+            client = self.server.client
+            if client is None:
+                item.state = DONE
+                item.message = "marked done (no Nookal connection to verify)"
+            else:
+                check = verify_payer(client, item)
+                item.message = check.message
+                item.state = DONE if check.ok else NEEDS_PAYER
+                item.nookal["payer_verified"] = check.ok
+                if check.approved is not None:
+                    item.nookal["payer_approved"] = check.approved
+                    item.nookal["payer_completed"] = check.completed
             self.queue.save(item)
 
         self.redirect(f"/r/{item_id}")
@@ -249,7 +264,9 @@ class Handler(BaseHTTPRequestHandler):
 
         banner = ""
         if item.message:
-            kind = "err" if item.state == BLOCKED else "good"
+            failed = (item.state == BLOCKED
+                      or item.nookal.get("payer_verified") is False)
+            kind = "err" if failed else "good"
             banner = f"<div class='banner {kind}'>{e(item.message)}</div>"
 
         if item.state in (NEEDS_PAYER, DONE):

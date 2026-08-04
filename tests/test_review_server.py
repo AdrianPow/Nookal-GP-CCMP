@@ -218,11 +218,18 @@ class CreateTests(ServerTestCase):
         for endpoint in ("addPatient", "addCase", "uploadFile"):
             self.assertEqual(self.fake.count(endpoint), 0)
 
-    def test_marking_the_payer_done(self):
-        self.add()
+    def test_marking_the_payer_done_verifies_it_first(self):
+        """'Done' is not taken on trust — the payer is read back, because
+        it is the one step the API cannot write."""
+        self.add(services_count=5)
         base = self.start(self.make_client())
         self.post(base, "/r/abc/create", {"patient_name": "Aiden Ward",
-                                          "dob": "1960-05-04"})
+                                          "dob": "1960-05-04",
+                                          "services_count": "5"})
+        self.fake.route("getCases", success({"cases": [
+            {"ID": "3466", "payers": [{"ID": "962", "payer": "Medicare",
+                                       "Sessions_Approved": "5",
+                                       "Sessions_Completed": "0"}]}]}))
         self.post(base, "/r/abc/done", {})
         self.assertEqual(self.queue.get("abc").state, DONE)
 

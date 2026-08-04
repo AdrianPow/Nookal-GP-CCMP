@@ -316,6 +316,63 @@ def _create(client: NookalClient, item: ReviewItem) -> CreateResult:
     return result
 
 
+@dataclass
+class PayerCheck:
+    ok: bool
+    message: str
+    approved: Optional[int] = None
+    completed: Optional[int] = None
+
+
+def verify_payer(client: NookalClient, item: ReviewItem) -> PayerCheck:
+    """Read the payer back after the operator says they added it.
+
+    The payer cannot be written through the API, but it CAN be read, so the
+    one manual step in the pipeline still gets checked. This catches the
+    failure that is otherwise invisible: Sessions = 0, which Nookal treats
+    as Unlimited rather than as zero.
+    """
+    patient_id = item.nookal.get("patient_id")
+    case_id = str(item.nookal.get("case_id") or "")
+    if not patient_id or not case_id:
+        return PayerCheck(False, "no Nookal case recorded for this referral")
+
+    try:
+        cases = client.get_cases(int(patient_id)) or []
+    except (NookalError, TypeError, ValueError) as exc:
+        return PayerCheck(False, f"could not read the case back: {exc}")
+
+    payers: list = []
+    for case in cases:
+        if isinstance(case, dict) and str(case.get("ID")) == case_id:
+            payers = [p for p in (case.get("payers") or [])
+                      if isinstance(p, dict)]
+            break
+    if not payers:
+        return PayerCheck(False, f"no payer on case {case_id} yet — add it "
+                                 "in Nookal (Case -> Add Payer -> Medicare) "
+                                 "before marking this done")
+
+    payer = payers[0]
+    approved, completed = client.payer_sessions(payer)
+    expected = item.fields.get("services_count") or DEFAULT_SESSIONS
+
+    if approved == 0:
+        return PayerCheck(False, "the payer says 0 sessions, which in Nookal "
+                                 "means UNLIMITED, not none. Open the case "
+                                 f"and set it to {expected}.",
+                          approved, completed)
+    if approved is None:
+        return PayerCheck(False, "could not read a session count off the "
+                                 "payer — check it by hand.", None, completed)
+    if approved != expected:
+        return PayerCheck(False, f"the payer says {approved} sessions but "
+                                 f"this referral expects {expected}. Fix "
+                                 "whichever is wrong.", approved, completed)
+    return PayerCheck(True, f"payer confirmed: {approved} sessions approved, "
+                            f"{completed} used.", approved, completed)
+
+
 def _notes_payload(item: ReviewItem) -> dict:
     payload = dict(item.fields)
     payload["received_date"] = item.received[:10]

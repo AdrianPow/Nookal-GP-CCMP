@@ -561,16 +561,21 @@ class NookalClient:
 
     def edit_case_payer(self, patient_id: int, case_id: int, payer_id: int,
                         **fields: Any) -> dict:
-        """Edit an EXISTING case payer. There is no endpoint to create one —
-        all nine plausible add-names returned Nookal's 404 page on
-        2026-08-04, so the payer itself is still added by hand in the UI.
+        """DOES NOT WORK — kept only so the finding is not re-discovered.
 
-        `case_id` is required: probing with it absent returned "One of
-        Patient ID | Case ID is missing", which is why the first attempt at
-        this appeared to do nothing.
+        Verified 2026-08-04 against a real payer: a valid case_id (3466),
+        a valid payer_id (962) and Nookal's own field names returned
+        `success` while the payer came back byte-identical. Even Reference,
+        a free-text field whose name was read straight off the record,
+        did not move.
 
-        Field names are Nookal's own, e.g. Sessions_Approved — see
-        PAYER_SESSIONS.
+        There is also no endpoint that CREATES a payer — nine candidate
+        names all returned Nookal's 404 page. Since the payer must be added
+        by hand anyway, an edit call would save nothing: the operator is
+        already in the Add Payer wizard typing the session count.
+
+        Use payer_sessions() to READ a payer back and verify what was
+        entered. That is the useful half of this.
         """
         return self.call("editCasePayer", patient_id=patient_id,
                          case_id=case_id, payer_id=payer_id, **fields)
