@@ -81,6 +81,36 @@ class CreateGuardTests(ClientTestCase):
         self.assertIn("3466", result.message)
         self.assertEqual(self.fake.count("addCase"), 0)
 
+    def test_an_exhausted_previous_plan_is_spelled_out(self):
+        """A patient referred again next year is the normal reason for a
+        second case. Whether the old plan is used up is the deciding fact,
+        so it goes in the message rather than making someone go and look."""
+        used_up = dict(case("3466"), payers=[{
+            "ID": "962", "payer": "Medicare", "Sessions_Approved": "5",
+            "Sessions_Completed": "5", "ReferralDate": "2025-07-16"}])
+        self.routes([used_up])
+        result = create_in_nookal(self.make_client(), self.item())
+        self.assertIn("5 of 5 sessions used", result.message)
+        self.assertIn("referred 2025-07-16", result.message)
+        self.assertIn("Create anyway", result.message)
+
+    def test_a_plan_still_in_use_is_equally_visible(self):
+        part_used = dict(case("3466"), payers=[{
+            "ID": "962", "Sessions_Approved": "5",
+            "Sessions_Completed": "2", "ReferralDate": "2026-07-01"}])
+        self.routes([part_used])
+        result = create_in_nookal(self.make_client(), self.item())
+        self.assertIn("2 of 5 sessions used", result.message)
+
+    def test_placeholder_referral_dates_are_not_shown(self):
+        """Nookal stores an unset date as 0000-00-00."""
+        blank = dict(case("3466"), payers=[{
+            "ID": "962", "Sessions_Approved": "5",
+            "Sessions_Completed": "0", "ReferralDate": "0000-00-00"}])
+        self.routes([blank])
+        result = create_in_nookal(self.make_client(), self.item())
+        self.assertNotIn("0000", result.message)
+
     def test_no_existing_case_proceeds(self):
         self.routes([case("1", "Physio")])
         result = create_in_nookal(self.make_client(), self.item())

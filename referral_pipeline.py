@@ -177,6 +177,31 @@ def _is_dry_run(body: Any) -> bool:
     return isinstance(body, dict) and bool(body.get("dry_run"))
 
 
+def describe_case(case: dict) -> str:
+    """Enough about an existing case to tell a repeat from a new referral.
+
+    A patient referred again next year is the normal reason for a second
+    CCMP case, so the deciding question is whether the previous plan is
+    used up. The payer answers it: Sessions_Completed against
+    Sessions_Approved, plus the date it was referred.
+    """
+    parts = [f"case {case.get('ID')}"]
+    status = str(case.get("status") or "").strip()
+    if status:
+        parts.append(status.lower())
+    for payer in case.get("payers") or []:
+        if not isinstance(payer, dict):
+            continue
+        approved, completed = NookalClient.payer_sessions(payer)
+        if approved is not None:
+            parts.append(f"{completed if completed is not None else '?'} of "
+                         f"{approved} sessions used")
+        referred = str(payer.get("ReferralDate") or "").strip()
+        if referred and not referred.startswith("0000"):
+            parts.append(f"referred {referred}")
+    return ", ".join(parts)
+
+
 def existing_ccmp_cases(client: NookalClient, patient_id: int) -> list[dict]:
     """Cases already titled GP CCMP on this patient.
 
@@ -320,13 +345,13 @@ def _create(client: NookalClient, item: ReviewItem) -> CreateResult:
     if not item.allow_duplicate_case and not rehearsal:
         already = existing_ccmp_cases(client, patient_id)
         if already:
-            ids = ", ".join(str(c.get("ID")) for c in already)
+            described = "; ".join(describe_case(c) for c in already)
             return CreateResult(
                 False, BLOCKED,
                 f"this patient already has a {NookalClient.CASE_TITLE} case "
-                f"({ids}). If this referral has already been processed, "
-                "there is nothing to do. If it is a genuinely new referral, "
-                "use Create anyway.")
+                f"— {described}. If that is this same referral, there is "
+                "nothing to do. If the previous plan is used up and this is "
+                "a new year's referral, use Create anyway.")
 
     result = CreateResult(True, NEEDS_PAYER, "", patient_id=patient_id)
     steps: list[str] = []
