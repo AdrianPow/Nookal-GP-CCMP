@@ -369,6 +369,8 @@ def scan_inbox(queue: Queue, inbox: str) -> int:
     Deduplicates by content hash as well as path: mail ingestion re-reads
     the whole mailbox after a state-file loss, and the same referral is
     sometimes forwarded twice — neither may create a second queue item."""
+    import time
+
     from referral_pipeline import file_sha256
 
     if not os.path.isdir(inbox):
@@ -376,7 +378,11 @@ def scan_inbox(queue: Queue, inbox: str) -> int:
     items = queue.all()
     known_paths = {os.path.abspath(i.pdf_path) for i in items}
     known_hashes = {i.sha256 for i in items if i.sha256}
-    added = 0
+
+    # Work out what is genuinely new before printing anything: a file that
+    # is a duplicate by content sits in the inbox forever, and the rescan
+    # runs every minute. Announcing it each time would be pure noise.
+    fresh, duplicates = [], []
     for name in sorted(os.listdir(inbox)):
         if not name.lower().endswith(".pdf"):
             continue
@@ -384,13 +390,37 @@ def scan_inbox(queue: Queue, inbox: str) -> int:
         if path in known_paths:
             continue
         try:
-            if file_sha256(path) in known_hashes:
-                continue
+            digest = file_sha256(path)
+            if digest in known_hashes:
+                duplicates.append(name)
+            else:
+                # Record it now, so two copies of the same referral in one
+                # batch are caught as well as one already in the queue.
+                known_hashes.add(digest)
+                fresh.append((name, path))
+        except OSError as exc:
+            print(f"    could not read {name}: {exc}")
+    if not fresh:
+        return 0
+
+    # OCR runs at roughly two seconds a page, and used to do it in total
+    # silence before the server printed anything — which looks like a hang.
+    print(f"  reading {len(fresh)} referral(s) from {inbox}/ — scanned ones "
+          "take a few seconds a page")
+    for name in duplicates:
+        print(f"    {name}: same as one already in the queue, skipped")
+    added = 0
+    for name, path in fresh:
+        try:
+            print(f"    {name} ...", end="", flush=True)
+            started = time.time()
             item = queue.add_pdf(path)
             known_hashes.add(item.sha256)
             added += 1
+            print(f" {item.source}, {item.pages} page(s), "
+                  f"{time.time() - started:.0f}s")
         except Exception as exc:                       # noqa: BLE001
-            print(f"  could not read {name}: {exc}")
+            print(f"\n    could not read {name}: {exc}")
     return added
 
 
