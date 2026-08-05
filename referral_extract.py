@@ -37,9 +37,20 @@ from typing import Any, Optional
 
 from nookal_client import medicare_number_valid, provider_number_valid
 
-# Text below this many characters per page means there is no usable text
-# layer and the page needs OCR.
+# Text below this many characters per page means there is effectively no
+# text layer at all.
 MIN_CHARS_PER_PAGE = 40
+
+# ...but "has some text" is not the same as "has usable text". Genuinely
+# digital referrals carry 900-1500 characters a page. One scanned care plan
+# carried 143 — a mangled OCR of the letterhead alone ("Health hsurarrce
+# Commission"), with every real field still locked in the image. That was
+# enough to be treated as digital, so OCR never ran and nothing was read.
+#
+# Below this, OCR runs as well and wins if it recovers more text. Comparing
+# the two is what makes it safe: a real digital referral that happens to be
+# sparse keeps its own text.
+THIN_TEXT_PER_PAGE = 350
 
 OK, CHECK, MISSING = "ok", "check", "missing"
 
@@ -82,6 +93,19 @@ class OcrUnavailable(RuntimeError):
     """Tesseract is not installed, so a scanned referral cannot be read."""
 
 
+def text_layer_is_thin(chars: int, pages: int) -> bool:
+    """Is this too little text to be a real digital referral?
+
+    Genuinely digital referrals carry roughly 900-1500 characters a page.
+    A scanned care plan carried 143 — a mangled OCR of the letterhead only,
+    with every real field still in the image. Any threshold that calls that
+    'digital' means OCR never runs and nothing is read.
+    """
+    if not pages:
+        return True
+    return chars / pages < THIN_TEXT_PER_PAGE
+
+
 def read_text(path: str) -> tuple[str, str, int]:
     """Return (text, source, page_count).
 
@@ -99,12 +123,21 @@ def read_text(path: str) -> tuple[str, str, int]:
     reader = PdfReader(path)
     pages = len(reader.pages)
     text = "\n".join((p.extract_text() or "") for p in reader.pages)
-    if pages and len(text) / pages >= MIN_CHARS_PER_PAGE:
+    per_page = len(text) / pages if pages else 0
+
+    if not text_layer_is_thin(len(text), pages):
         return text, "digital", pages
+
     try:
-        return ocr_pdf(path), "ocr", pages
+        scanned = ocr_pdf(path)
     except OcrUnavailable:
+        if per_page >= MIN_CHARS_PER_PAGE:
+            return text, "digital", pages     # thin, but it is all we have
         return "", "ocr_unavailable", pages
+
+    if len(scanned) > len(text):
+        return scanned, "ocr", pages
+    return text, "digital", pages
 
 
 def ocr_pdf(path: str) -> str:

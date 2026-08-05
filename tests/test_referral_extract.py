@@ -11,7 +11,8 @@ import unittest
 
 from referral_extract import (CHECK, MISSING, OK, extract_fields,
                               find_medicare, find_provider, find_referral_date,
-                              find_sessions, to_iso, trim_name)
+                              find_sessions, text_layer_is_thin, to_iso,
+                              trim_name)
 
 # Shortened from A. Ward.pdf — narrative letter, provider number labelled.
 LETTER = """RE: Mr Aiden Ward (DOB: 04/05/1960)
@@ -147,6 +148,31 @@ class SessionTests(unittest.TestCase):
 
     def test_implausible_counts_ignored(self):
         self.assertEqual(find_sessions("40 visits").confidence, MISSING)
+
+
+class TextLayerTests(unittest.TestCase):
+    """Deciding whether a PDF's own text is worth using, or OCR should run.
+
+    A scanned care plan carried a text layer of 143 characters — a garbled
+    OCR of the letterhead alone ("Health hsurarrce Commission") — while
+    every real field stayed locked in the page image. It was treated as
+    digital, so OCR never ran and the referral came out completely empty.
+    """
+
+    def test_a_real_digital_referral_keeps_its_own_text(self):
+        # Measured across the real corpus: 900-1500 characters a page.
+        self.assertFalse(text_layer_is_thin(3745, 4))    # 936/page
+        self.assertFalse(text_layer_is_thin(3095, 2))    # 1548/page
+        self.assertFalse(text_layer_is_thin(8558, 8))    # 1070/page
+
+    def test_a_letterhead_only_text_layer_is_thin(self):
+        self.assertTrue(text_layer_is_thin(143, 1))
+
+    def test_no_text_at_all_is_thin(self):
+        self.assertTrue(text_layer_is_thin(0, 4))
+
+    def test_zero_pages_does_not_divide_by_zero(self):
+        self.assertTrue(text_layer_is_thin(0, 0))
 
 
 class FormLayoutTests(unittest.TestCase):
