@@ -149,6 +149,75 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(find_sessions("40 visits").confidence, MISSING)
 
 
+class FormLayoutTests(unittest.TestCase):
+    """Three referral layouts turned up in one clinic's post. Only the GP
+    letter was handled at first; these are the other two."""
+
+    def test_patients_name_label(self):
+        text = "CHRONIC DISEASE MANAGEMENT\nPatient's Name: Miss Holly Kell\n"
+        self.assertEqual(extract_fields(text)["patient_name"].value,
+                         "Holly Kell")
+
+    def test_curly_apostrophe_in_the_label(self):
+        text = "Patient’s Name: Ms Cheryl Moss Date of Birth: 12/11/1960"
+        self.assertEqual(extract_fields(text)["patient_name"].value,
+                         "Cheryl Moss")
+
+    def test_name_does_not_run_into_the_next_label(self):
+        """The CDM forms put the next field's label on the same line, which
+        produced "Cheryl Moss Date" until label words ended the capture."""
+        text = "Patient's Name: Ms Cheryl Moss Date of Birth: 12/11/1960"
+        fields = extract_fields(text)
+        self.assertEqual(fields["patient_name"].value, "Cheryl Moss")
+        self.assertEqual(fields["dob"].value, "1960-11-12")
+
+    def test_epc_form_first_name_and_surname_boxes(self):
+        text = ("Patient Details\nMedicare Number\n3349170497\n"
+                "First Name\nCheryl Surname Moss\nAddress\n")
+        self.assertEqual(extract_fields(text)["patient_name"].value,
+                         "Cheryl Moss")
+
+    def test_date_of_birth_spelled_out(self):
+        text = "Patient's Name: Ms X Y\nDate of Birth: 12/11/1960"
+        self.assertEqual(extract_fields(text)["dob"].value, "1960-11-12")
+
+    def test_text_between_the_dob_label_and_the_date(self):
+        """One form extracts as 'DOB: Patient Demographics.  12/11/1960'."""
+        text = "Ms Cheryl Moss   DOB: Patient Demographics.  12/11/1960"
+        self.assertEqual(extract_fields(text)["dob"].value, "1960-11-12")
+
+    def test_the_letter_layout_still_works(self):
+        self.assertEqual(extract_fields(LETTER)["patient_name"].value,
+                         "Aiden Ward")
+
+
+class MangledSeparatorTests(unittest.TestCase):
+    """One practice's PDFs render '/' as '1', so every date in the document
+    extracts as a run of ten digits."""
+
+    def test_repairs_a_recoverable_date(self):
+        field = extract_fields("Date of Birth: 1510812002")["dob"]
+        self.assertEqual(field.value, "2002-08-15")
+
+    def test_says_the_separators_were_unreadable(self):
+        field = extract_fields("Date of Birth: 1510812002")["dob"]
+        self.assertEqual(field.confidence, CHECK)
+        self.assertIn("CONFIRM", field.note)
+        self.assertIn("1510812002", field.note)
+
+    def test_ten_digits_that_are_not_a_date_are_refused(self):
+        """Only ever repaired when 1s sit exactly where separators belong —
+        otherwise a wrong date of birth would be written silently."""
+        field = extract_fields("Date of Birth: 4070953263")["dob"]
+        self.assertEqual(field.confidence, MISSING)
+        self.assertIn("could not be read as a date", field.note)
+
+    def test_an_impossible_repair_is_refused(self):
+        # 45/99/2002 is not a date even after repairing the separators.
+        self.assertEqual(extract_fields("DOB: 4519912002")["dob"].confidence,
+                         MISSING)
+
+
 class NameTrimTests(unittest.TestCase):
     def test_stops_at_letterhead_words(self):
         self.assertEqual(trim_name("Jamie Sutherland KEPERRA Keperra QLD"),

@@ -158,7 +158,25 @@ RE_PATIENT = re.compile(
     rf"\bRE:[ \t]*(?:{TITLES}\.?[ \t]+)?"
     r"([A-Z][A-Za-z'\-]+(?:[ \t]+[A-Z][A-Za-z'\-]+)+)",
 )
-RE_DOB = re.compile(r"\bDOB:?\s*\(?\s*(\d{1,2}[/\-]\d{1,2}[/\-]\d{4})")
+# "Patient's Name: Miss Holly Kell" on the CDM/TCA forms. Both apostrophes,
+# because one real referral uses the curly one.
+RE_PATIENT_LABELLED = re.compile(
+    rf"Patient['’]?s?[ \t]+Name[ \t]*:?[ \t]*(?:{TITLES}\.?[ \t]+)?"
+    r"([A-Z][A-Za-z'\-]+(?:[ \t]+[A-Z][A-Za-z'\-]+)+)")
+
+# The EPC form splits the name across two labelled boxes, which extract as
+# "First Name\nCheryl Surname Moss".
+RE_PATIENT_EPC = re.compile(
+    r"First[ \t]+Name[ \t]*:?[ \t]*\n?[ \t]*([A-Z][A-Za-z'\-]+)"
+    r"[ \t]+Surname[ \t]+([A-Z][A-Za-z'\-]+)")
+
+# Accepts "Date of Birth:" as well as "DOB:", and tolerates text between the
+# label and the date — one form extracts as
+# "DOB: Patient Demographics.  12/11/1960". The bare 10-digit alternative
+# catches dates whose separators were mangled; see repair_date_separators.
+RE_DOB = re.compile(
+    r"(?:Date[ \t]+of[ \t]+Birth|\bD\.?O\.?B\.?)[ \t]*:?[^\d\n]{0,40}"
+    r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{4}|\d{10})", re.I)
 RE_DATE_NUMERIC = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")
 RE_DATE_LONG = re.compile(
     r"\b(\d{1,2}\s+(?:January|February|March|April|May|June|July|August|"
@@ -177,9 +195,14 @@ RE_GP = re.compile(
 
 # Words that mean the capture has run past the name into letterhead or
 # clinic detail — "Dr Jamie Sutherland KEPERRA Keperra QLD".
+# On the CDM forms the next field's label sits on the same line as the
+# name — "Patient's Name: Ms Cheryl Moss Date of Birth: 12/11/1960" — so
+# label words have to end the capture as well as address words do.
 NAME_STOPWORDS = re.compile(
     r"\b(QLD|NSW|VIC|SA|WA|TAS|NT|ACT|Medical|Clinic|Centre|Practice|"
-    r"Shop|Suite|Unit|Street|Road|Health|Phone|Fax|Visit|DOB)\b", re.I)
+    r"Shop|Suite|Unit|Street|Road|Health|Phone|Fax|Visit|DOB|"
+    r"Date|Birth|Medicare|Contact|Surname|Provider|Number|Patient|"
+    r"Details|Address|Home|Work|Mobile)\b", re.I)
 
 WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
                 "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
@@ -284,9 +307,28 @@ def find_sessions(text: str) -> Field:
 
 
 def find_patient(text: str) -> Field:
+    """Three layouts, in order of how explicit they are.
+
+    A GP letter says "RE: Mr Aiden Ward". The CDM/TCA forms say "Patient's
+    Name: Miss Holly Kell". The EPC form splits it into First Name and
+    Surname boxes. All three turn up in one clinic's referrals.
+    """
+    labelled = RE_PATIENT_LABELLED.search(text)
+    if labelled:
+        name = trim_name(" ".join(labelled.group(1).split()))
+        if name and " " in name:
+            return Field(name, CHECK, "from the 'Patient's Name' field")
+
+    epc = RE_PATIENT_EPC.search(text)
+    if epc:
+        return Field(f"{epc.group(1)} {epc.group(2)}", CHECK,
+                     "from the First Name / Surname boxes")
+
     match = RE_PATIENT.search(text)
     if not match:
-        return Field(None, MISSING, "no 'RE:' line found")
+        return Field(None, MISSING,
+                     "no 'RE:', 'Patient's Name' or 'First Name/Surname' "
+                     "found — type the name in")
     name = trim_name(" ".join(match.group(1).split()))
     if not name or " " not in name:
         return Field(name or None, CHECK, "could not read a full name "
@@ -294,14 +336,38 @@ def find_patient(text: str) -> Field:
     return Field(name, CHECK, "from the 'RE:' line")
 
 
+def repair_date_separators(digits: str) -> Optional[str]:
+    """Recover DD/MM/YYYY from a run of ten digits.
+
+    One practice's PDFs render '/' as '1', so 15/08/2002 extracts as
+    1510812002. Every date in that document was corrupted the same way
+    (04/02/2025 as 0410212025), so the substitution is systematic rather
+    than a one-off misread — but it is still a guess, and callers flag it
+    for confirmation.
+    """
+    if len(digits) != 10 or digits[2] != "1" or digits[5] != "1":
+        return None
+    return f"{digits[:2]}/{digits[3:5]}/{digits[6:]}"
+
+
 def find_dob(text: str) -> Field:
     match = RE_DOB.search(text)
     if not match:
-        return Field(None, MISSING, "no DOB label found")
-    iso = to_iso(match.group(1))
-    if iso is None:
-        return Field(match.group(1), CHECK, "could not parse as a date")
-    return Field(iso, CHECK, f"read as {match.group(1)} (day/month order)")
+        return Field(None, MISSING, "no date-of-birth label found")
+    raw = match.group(1)
+    iso = to_iso(raw)
+    if iso is not None:
+        return Field(iso, CHECK, f"read as {raw} (day/month order)")
+
+    repaired = repair_date_separators(raw)
+    iso = to_iso(repaired) if repaired else None
+    if iso is not None:
+        return Field(iso, CHECK,
+                     f"the PDF gave '{raw}' with unreadable separators; read "
+                     f"as {repaired} — CONFIRM against the referral")
+    return Field(None, MISSING,
+                 f"a date of birth was labelled but '{raw}' could not be "
+                 "read as a date — type it in")
 
 
 def trim_name(name: str) -> str:
