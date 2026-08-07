@@ -436,6 +436,117 @@ class GroupPracticeTests(unittest.TestCase):
                          OK)
 
 
+class NineReferralSweepTests(unittest.TestCase):
+    """Fixtures taken from the full set of nine test referrals — each one
+    is the OCR text that made a field come out wrong."""
+
+    # Document (7): a four-doctor letterhead, each partner beside their own
+    # provider number, and the actual referrer only named at the sign-off.
+    MEDICROSS = (
+        "medicross\n"
+        "MEDICAL\n"
+        "Strathpine Doctors T/A Medicross Strathpine\n"
+        "Strathpine Centre 65, 295 Gympie Road Strathpine QLD 4500\n"
+        "Phone: 07 3881 3828 Fax: 07 3881 2134\n"
+        "Dr Kambiz Dara (MD,FRACGP) - Provider No. 4068296B\n"
+        "Dr Brant Bosch (MBChB, FRACGP) -Provider No. 2676205H\n"
+        "Dr Aykari Lynn, (MBBS, AMC CERT, FRACGP) - Provider No. 4638503K\n"
+        "Dr Cho Cho Mar (MBBS, FRACGP) - Provider No. 5157745L\n"
+        "06/03/2026\n"
+        "RE: Mr Murray JONES\n"
+        "DOB: 19/07/1957\n"
+        "Dear Physiotherapist,\n"
+        "Thank you for accepting the referral of Murray JONES.\n"
+        "Yours faithfully,\n"
+        ";\n"
+        "Dr Cho Cho Mar A\n"
+        "MBBS, FRACGP J -\n"
+        "5157745L\n")
+
+    def test_the_signing_doctor_beats_the_letterhead_list(self):
+        self.assertEqual(extract_fields(self.MEDICROSS)["gp_name"].value,
+                         "Dr Cho Cho Mar")
+
+    def test_the_signers_own_provider_number_is_chosen(self):
+        """The number for a doctor is printed AFTER their name, so plain
+        nearest-by-distance picked the previous doctor's number, which
+        ends just before the anchor."""
+        field = extract_fields(self.MEDICROSS)["gp_provider_number"]
+        self.assertEqual(field.value, "5157745L")
+
+    def test_a_logo_fragment_is_not_the_practice(self):
+        """OCR reads the graphic as its own line: a bare 'MEDICAL' matched
+        first and hid the real name two lines below."""
+        self.assertEqual(extract_fields(self.MEDICROSS)["gp_practice"].value,
+                         "Strathpine Doctors T/A Medicross Strathpine")
+
+    # Maxwell Briggs: the letterhead is a shredded graphic, but the letter
+    # closes with a full signature block.
+    def test_practice_named_under_the_signature(self):
+        text = ("NUND AH VILL AGE 4270 Sandgate Road, Nundah 4012\n"
+                "FAMILY PRACTICE E: reception@nvfp.com.au\n"
+                "Yours sincerely,\n"
+                "Dr Murtaza Dungerwalla 6076049W\n"
+                "Nundah Village Family Practice\n"
+                "ABN 35628 990 956\n")
+        fields = extract_fields(text)
+        self.assertEqual(fields["gp_practice"].value,
+                         "Nundah Village Family Practice")
+
+    # Karen Buckle: the practice is never named — the signature block goes
+    # doctor, then shopping-centre address.
+    def test_an_address_under_the_signature_is_not_a_name(self):
+        text = ("Yours faithfully,\n"
+                "Dr Suzanne Thomson,\n\n"
+                "Shop 87 Brookside Shopping Centre\n\n"
+                "159 Osborne Raad\n")
+        field = extract_fields(text)["gp_practice"]
+        self.assertEqual(field.value, "Shop 87 Brookside Shopping Centre")
+        self.assertIn("street address", field.note)
+
+    # Paige Barker: boxes in Surname / First Name order, and the
+    # government letterhead above them.
+    BARKER = ("{Australian Government\n"
+              "Health Insurance Commission\n"
+              "Enhanced Primary Care (EPC) Program\n"
+              "GP details\n"
+              "Provider Number 5778858B |\n"
+              "Dr Emily Watters\n"
+              "Name\n"
+              "5/272 Dohles Rocks Rd\n"
+              "Address MURRUMBA DOWNS QLD 4503\n"
+              "Patient Details\n"
+              "Medicare Number 4242940619\n"
+              "[~ Surname BARKER\n"
+              "First Name PAIGE\n")
+
+    def test_surname_first_name_boxes_in_reverse_order(self):
+        self.assertEqual(extract_fields(self.BARKER)["patient_name"].value,
+                         "PAIGE BARKER")
+
+    def test_the_government_letterhead_is_never_the_practice(self):
+        self.assertNotEqual(extract_fields(self.BARKER)["gp_practice"].value,
+                            "Health Insurance Commission")
+
+    def test_address_collected_across_torn_labels(self):
+        """The scanned block interleaves bare labels with the values, and
+        the suburb line arrives welded to its label."""
+        self.assertEqual(extract_fields(self.BARKER)["gp_practice"].value,
+                         "5/272 Dohles Rocks Rd, MURRUMBA DOWNS QLD 4503")
+
+    # Care Plan page 1: column-wise OCR welds the form's NOTE column onto
+    # the address lines.
+    def test_form_boilerplate_is_cut_off_the_address(self):
+        text = ("Enhanced Primary Care (EPC) Program\n"
+                "Dr Michael Bailey NOTE: Relevant MBS item(s) above must be\n"
+                "17 Sparkes Road BILLED by GP prior to patient receiving their\n"
+                "\n"
+                "BRAY PARK 4500 first referred allied health service\n"
+                "4082816K\n")
+        field = extract_fields(text)["gp_practice"]
+        self.assertEqual(field.value, "17 Sparkes Road, BRAY PARK 4500")
+
+
 class AddressFallbackTests(unittest.TestCase):
     """Some forms never name the referring practice at all. The street
     address is still worth more than an empty field, and the practice

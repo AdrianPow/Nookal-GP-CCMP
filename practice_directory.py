@@ -37,7 +37,7 @@ from typing import Optional
 
 from nookal_client import provider_number_valid
 from referral_extract import (RE_DOMAIN, RE_PROVIDER_CANDIDATE,
-                              gp_address_lines, is_our_own_clinic,
+                              gp_address_lines, is_our_own_domain,
                               looks_like_street_address)
 
 # Phone and fax numbers are read from the letterhead region only. Further
@@ -106,7 +106,7 @@ def extract_practice_keys(text: str) -> dict[str, list[str]]:
 
     domains = [m.group(1).lower() for line in head
                for m in RE_DOMAIN.finditer(line)
-               if not is_our_own_clinic(m.group(1))]
+               if not is_our_own_domain(m.group(1))]
 
     providers = [re.sub(r"\s+", "", n)
                  for n in RE_PROVIDER_CANDIDATE.findall(text)

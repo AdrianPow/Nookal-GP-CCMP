@@ -62,6 +62,14 @@ class KeyExtractionTests(unittest.TestCase):
             "W: embracemovementclinic.com.au\nSOME LETTERHEAD\n")
         self.assertEqual(keys["domains"], [])
 
+    def test_our_own_mangled_email_domain_is_not_a_key(self):
+        """A scanned copy of the clinic's own abbreviated email arrives as
+        'embrqacemc.com.au'. Stored as a key, it would match whichever
+        practice was confirmed first to every letter addressed to us."""
+        keys = extract_practice_keys(
+            "Email: nicole@embrqacemc.com.au\nSOME LETTERHEAD\n")
+        self.assertEqual(keys["domains"], [])
+
     def test_only_validated_provider_numbers_are_keys(self):
         keys = extract_practice_keys(CASTLE_HILL)
         self.assertIn("5778858B", keys["provider_numbers"])

@@ -215,6 +215,11 @@ _GAP = r"[ \t]*\n?[ \t]*"
 RE_PATIENT_EPC = re.compile(
     r"First[ \t]+Name[ \t]*:?" + _GAP + r"(?!Surname\b)([A-Z][A-Za-z'\-]+)"
     + _GAP + r"Surname[ \t]*:?" + _GAP + r"([A-Z][A-Za-z'\-]+)")
+# ...and one scanned form prints the boxes the other way round:
+# "Surname BARKER" then "First Name PAIGE" on the next line.
+RE_PATIENT_EPC_REVERSED = re.compile(
+    r"\bSurname[ \t]*:?" + _GAP + r"(?!First\b)([A-Z][A-Za-z'\-]+)"
+    + _GAP + r"First[ \t]+Name[ \t]*:?" + _GAP + r"([A-Z][A-Za-z'\-]+)")
 
 # Accepts "Date of Birth:" as well as "DOB:", and tolerates text between the
 # label and the date — one form extracts as
@@ -288,8 +293,10 @@ SESSION_PATTERNS = [
 ]
 
 # The destination clinic appears in every referral's address block. Without
-# excluding it, it gets picked up as the *referring* practice.
-OWN_CLINIC_MARKERS = ("embrace movement",)
+# excluding it, it gets picked up as the *referring* practice. 'embracemc'
+# is the clinic's abbreviated email domain, which turns up in the same
+# address blocks.
+OWN_CLINIC_MARKERS = ("embrace movement", "embracemc")
 
 # The EPC form has no letterhead at all — it is a Department of Health form,
 # so the referring practice is only ever in the 'GP details' block, as the
@@ -312,6 +319,25 @@ ADDRESS_JUNK = re.compile(r"^(ABN|ACN|Ph|Phone|Fax|Tel|Email|E:|W:|www\.)\b"
 ADDRESS_END = re.compile(r"^(Patient|Medicare|Provider|Name|NOTE|Allied|"
                          r"First|Surname|Referral)\b", re.I)
 RE_POSTCODE_LINE = re.compile(r"\b\d{4}\s*$")
+
+# The EPC form prints a NOTE column beside the GP details, and column-wise
+# OCR welds it onto the address: "17 Sparkes Road BILLED by GP prior to
+# patient receiving their". The wording is the form's own fixed text, so it
+# can be cut off wherever it starts.
+ADDRESS_BLEED = re.compile(
+    r"\s*\b(NOTE:|BILLED by|first referred|rebate to be|Relevant MBS).*$",
+    re.I)
+# A form label sitting on its own line (or leading a value it was welded
+# to), inside the torn-apart scanned blocks.
+RE_BARE_LABEL = re.compile(r"^(Name|Address|Provider\s*No\.?|Phone|Ph|Fax|"
+                           r"Email)[ \t:.]*$", re.I)
+RE_LEADING_LABEL = re.compile(r"^(Address|Name)[ \t:]+(?=\S)", re.I)
+
+
+def clean_address_line(line: str) -> str:
+    line = " ".join(line.split())
+    line = ADDRESS_BLEED.sub("", line)
+    return RE_LEADING_LABEL.sub("", line).strip()
 
 STREET_WORDS = re.compile(
     r"\b(Shop|Suite|Unit|Level|Rd|Road|St|Street|Drv|Drive|Ave|Avenue|"
@@ -342,7 +368,9 @@ FORM_TITLE_MARKERS = re.compile(
     r"\b(referral form|enhanced primary care|allied health services?|"
     r"team care arrangements?|gp management plan|multidisciplinary care|"
     r"department of health|to be completed by|medicare claims?|"
-    r"private health insurance)\b", re.I)
+    r"private health insurance|health insurance commission|"
+    r"australian government|services australia|chronic condition"
+    r")\b", re.I)
 
 # A referral older than this, or dated in the future, is a mis-read rather
 # than a real date — one OCR run produced 1951 for a 2025 letter.
@@ -420,8 +448,16 @@ def find_provider(text: str, near: Optional[str] = None) -> Field:
     if near:
         anchors = [m.start() for m in re.finditer(re.escape(near), text)]
         if anchors:
-            _, number = min(found, key=lambda f: min(abs(f[0] - a)
-                                                     for a in anchors))
+            # A doctor's provider number is printed AFTER their name —
+            # "Dr Cho Cho Mar (MBBS, FRACGP) - Provider No. 5157745L" — so
+            # a number before the anchor is probably the previous doctor's
+            # on a letterhead list. Plain nearest-by-distance picked
+            # exactly that once; distance behind is punished instead.
+            def distance(pos: int) -> int:
+                return min((pos - a) if pos >= a else (a - pos) * 4
+                           for a in anchors)
+
+            _, number = min(found, key=lambda f: distance(f[0]))
             return Field(number, CHECK,
                          f"{len(unique)} provider numbers on the referral; "
                          f"this is the one printed nearest {near}")
@@ -467,6 +503,12 @@ def find_patient(text: str) -> Field:
     if epc:
         return Field(f"{epc.group(1)} {epc.group(2)}", CHECK,
                      "from the First Name / Surname boxes")
+
+    reversed_ = RE_PATIENT_EPC_REVERSED.search(text)
+    if reversed_:
+        surname, first = reversed_.group(1), reversed_.group(2)
+        return Field(f"{first} {surname}", CHECK,
+                     "from the Surname / First Name boxes")
 
     match = RE_PATIENT.search(text)
     if not match:
@@ -602,6 +644,30 @@ def find_referral_date(text: str, dob: Optional[str]) -> Field:
     return Field(None, MISSING, "no letter date found")
 
 
+RE_VALEDICTION = re.compile(
+    r"\b(?:Yours\s+(?:sincerely|faithfully|truly)|Kind(?:est)?\s+regards|"
+    r"Warm\s+regards|Regards)\b", re.I)
+SIGNATURE_WINDOW = 200
+
+
+def find_gp_signature(text: str) -> Optional[Field]:
+    """The doctor named under the letter's sign-off.
+
+    Group practices list every partner on the letterhead, each beside their
+    own provider number, so proximity to a number cannot tell the referrer
+    from a colleague — one letter named four doctors and the nearest-match
+    picked the wrong one. The doctor under 'Yours faithfully' is the one
+    who actually signed."""
+    for m in RE_VALEDICTION.finditer(text):
+        window = text[m.end():m.end() + SIGNATURE_WINDOW]
+        match = RE_GP.search(window)
+        if match:
+            name = trim_name(match.group(1))
+            if name:
+                return Field(f"Dr {name}", CHECK, "signed the letter")
+    return None
+
+
 def find_gp_in_block(text: str) -> Optional[Field]:
     """The doctor named in the form's own 'GP details' box.
 
@@ -654,6 +720,20 @@ def is_our_own_clinic(line: str) -> bool:
     return any(re.sub(r"[^a-z]", "", m) in squashed for m in OWN_CLINIC_MARKERS)
 
 
+def is_our_own_domain(stem: str) -> bool:
+    """Like is_our_own_clinic, but fuzzy — a scanned copy of the clinic's
+    own email address arrives OCR-mangled ('embrqacemc'), and treating it
+    as some other practice's domain would key that practice to us."""
+    squashed = re.sub(r"[^a-z]", "", stem.lower())
+    for marker in OWN_CLINIC_MARKERS:
+        m = re.sub(r"[^a-z]", "", marker)
+        if m in squashed or squashed in m:
+            return True
+        if difflib.SequenceMatcher(None, squashed, m).ratio() >= 0.8:
+            return True
+    return False
+
+
 def looks_like_a_practice_name(line: str) -> bool:
     """Shared by both routes below: is this line a practice name at all?"""
     if len(line) < 6 or len(line) > 70 or line.lower().startswith("re:"):
@@ -668,6 +748,12 @@ def looks_like_a_practice_name(line: str) -> bool:
         return False          # that is us, not the referrer
     if FORM_TITLE_MARKERS.search(line):
         return False          # the form's own wording, not a letterhead
+    if PRACTICE_WORDS.fullmatch(line.strip()):
+        return False          # a bare "MEDICAL" is a logo fragment, and the
+                              # real name is usually on a nearby line
+    if looks_like_street_address(line):
+        return False          # "Shop 87 Brookside Shopping Centre" is where
+                              # the practice is, not what it is called
     return bool(PRACTICE_WORDS.search(line))
 
 
@@ -719,7 +805,7 @@ def practice_name_from_domain(lines: list[str]) -> Optional[str]:
     # Clinic", which no longer looks like us but still is.
     stems = [m.group(1).lower() for line in lines
              for m in RE_DOMAIN.finditer(line)
-             if not is_our_own_clinic(m.group(1))]
+             if not is_our_own_domain(m.group(1))]
     if not stems:
         return None
     words = [w for line in lines
@@ -765,7 +851,7 @@ def gp_address_lines(text: str) -> list[str]:
     lines = text[block.start(1):].splitlines()
     collected: list[str] = []
     for line in lines:
-        line = " ".join(line.split())
+        line = clean_address_line(line)
         if not line or ADDRESS_END.match(line):
             break
         if ADDRESS_JUNK.search(line):
@@ -788,16 +874,38 @@ def address_near_gp(text: str, gp_name: Optional[str]) -> list[str]:
         return []
     for m in re.finditer(re.escape(gp_name), text):
         collected: list[str] = []
-        for line in text[m.end():].splitlines()[1:4]:
-            line = " ".join(line.split())
-            if not looks_like_street_address(line):
+        for line in text[m.end():].splitlines()[1:6]:
+            raw = " ".join(line.split())
+            if not raw or RE_BARE_LABEL.match(raw):
+                continue      # empty lines and stray form labels, from the
+                              # torn-apart scanned blocks, are stepped over
+            line = clean_address_line(raw)
+            ends = RE_POSTCODE_LINE.search(line)
+            if not (looks_like_street_address(line)
+                    or (collected and ends)):
                 break
             collected.append(line)
-            if RE_POSTCODE_LINE.search(line):
+            if ends or len(collected) == 3:
                 break
         if collected:
             return collected
     return []
+
+
+def practice_near_gp(text: str, gp_name: Optional[str]) -> Optional[str]:
+    """A practice name in the lines directly under the referring doctor.
+
+    Letters often close with a full signature block — doctor, practice,
+    address — even when the letterhead at the top is a graphic that OCR
+    shreds ("NUND AH VILL AGE ... FAMILY PRACTICE E: ...")."""
+    if not gp_name:
+        return None
+    for m in re.finditer(re.escape(gp_name), text):
+        for line in text[m.end():].splitlines()[1:4]:
+            line = " ".join(line.split())
+            if looks_like_a_practice_name(line):
+                return line
+    return None
 
 
 def find_practice(text: str, gp_name: Optional[str] = None) -> Field:
@@ -827,6 +935,10 @@ def find_practice(text: str, gp_name: Optional[str] = None) -> Field:
     for line in lines:
         if looks_like_a_practice_name(line):
             return Field(line, CHECK, "letterhead line near the top")
+
+    signature = practice_near_gp(text, gp_name)
+    if signature:
+        return Field(signature, CHECK, "named under the referring doctor")
 
     # Some forms never name the practice at all — the GP details block goes
     # straight from the doctor's name to a street address. The address is
@@ -878,7 +990,7 @@ def extract_fields(text: str) -> dict[str, Field]:
     # chosen by whose it is rather than by where it sits on the page. Only
     # falls back to the old order — number first, then the doctor nearest
     # it — on referrals that have no 'GP details' box to read.
-    named = find_gp_in_block(text)
+    named = find_gp_in_block(text) or find_gp_signature(text)
     provider = find_provider(text, near=named.value if named else None)
     gp = named or find_gp(text, provider.value)
     dob = find_dob(text)
