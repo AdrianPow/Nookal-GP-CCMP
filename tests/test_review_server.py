@@ -37,10 +37,11 @@ class ServerTestCase(ClientTestCase):
             "setFileActive": success({"file_id": "f1"}),
         })
 
-    def start(self, client=None):
+    def start(self, client=None, directory=None):
         server = rs.ReviewServer(("127.0.0.1", 0), rs.Handler)
         server.queue = self.queue
         server.client = client
+        server.directory = directory
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -217,6 +218,39 @@ class CreateTests(ServerTestCase):
                                           "dob": "1960-05-04"})
         for endpoint in ("addPatient", "addCase", "uploadFile"):
             self.assertEqual(self.fake.count(endpoint), 0)
+
+    def test_create_teaches_the_practice_directory(self):
+        """The name the reviewer approved — corrections included — is
+        stored against the referral's practice keys, so the next referral
+        from the same practice starts out right."""
+        from practice_directory import PracticeDirectory
+        item = self.add(gp_practice="bk MEDICAL CENTRE P: 073886 5100")
+        item.practice_keys = {"phones": ["0738865100"], "domains": [],
+                              "provider_numbers": [], "addresses": []}
+        self.queue.save(item)
+        directory = PracticeDirectory(
+            os.path.join(self.tmp.name, "practices.json"))
+        base = self.start(self.make_client(), directory=directory)
+        self.post(base, "/r/abc/create",
+                  {"patient_name": "Aiden Ward", "dob": "1960-05-04",
+                   "gp_practice": "Castle Hill Medical Centre"})
+        match = directory.lookup({"phones": ["0738865100"], "domains": [],
+                                  "provider_numbers": [], "addresses": []})
+        self.assertEqual(match.name, "Castle Hill Medical Centre")
+
+    def test_saving_for_later_teaches_nothing(self):
+        """Only Create is a confirmation. A save may be a half-checked
+        form the reviewer is coming back to."""
+        from practice_directory import PracticeDirectory
+        item = self.add(gp_practice="Some Practice")
+        item.practice_keys = {"phones": ["0738865100"], "domains": [],
+                              "provider_numbers": [], "addresses": []}
+        self.queue.save(item)
+        directory = PracticeDirectory(
+            os.path.join(self.tmp.name, "practices.json"))
+        base = self.start(self.make_client(), directory=directory)
+        self.post(base, "/r/abc/save", {"gp_practice": "Some Practice"})
+        self.assertEqual(directory.records, [])
 
     def test_marking_the_payer_done_verifies_it_first(self):
         """'Done' is not taken on trust — the payer is read back, because

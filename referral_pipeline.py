@@ -80,6 +80,10 @@ class ReviewItem:
     # Set by the operator choosing "Create anyway" when the patient already
     # has a GP CCMP case.
     allow_duplicate_case: bool = False
+    # Phone numbers, web domains, provider numbers and the GP address found
+    # on the referral — kept so the practice directory can learn from this
+    # referral once a reviewer confirms it. See practice_directory.py.
+    practice_keys: dict[str, Any] = _field(default_factory=dict)
 
     # ------------------------------------------------------------ helpers
 
@@ -113,8 +117,12 @@ def file_sha256(path: str) -> str:
 # --------------------------------------------------------------------------
 
 class Queue:
-    def __init__(self, root: str = "queue"):
+    def __init__(self, root: str = "queue", directory=None):
         self.root = root
+        # A practice_directory.PracticeDirectory, when the server provides
+        # one: referrals get their practice name filled from it as they
+        # arrive. Optional so nothing else that builds a Queue changes.
+        self.directory = directory
         os.makedirs(self.root, exist_ok=True)
 
     def _path(self, item_id: str) -> str:
@@ -137,6 +145,11 @@ class Queue:
             confidence={k: f.confidence for k, f in referral.fields.items()},
             notes={k: f.note for k, f in referral.fields.items() if f.note},
         )
+        from practice_directory import extract_practice_keys
+
+        item.practice_keys = extract_practice_keys(referral.text)
+        if self.directory is not None:
+            apply_practice_lookup(item, self.directory)
         self.save(item)
         return item
 
@@ -172,6 +185,45 @@ class Queue:
 # --------------------------------------------------------------------------
 # Names
 # --------------------------------------------------------------------------
+
+def apply_practice_lookup(item: ReviewItem, directory) -> None:
+    """Fill or correct the practice name from the directory of practices
+    confirmed on earlier referrals.
+
+    Always confidence 'check', never 'ok': the match is deterministic, but
+    the reviewer should still see that the name came from the directory
+    rather than off this referral, and what it matched on. When the
+    referral and the directory disagree, the directory wins — its name was
+    typed or approved by a human, the referral's came out of OCR — but the
+    note keeps what the referral said, so a genuine change of name at the
+    same phone number is visible rather than silently papered over."""
+    match = directory.lookup(item.practice_keys)
+    if match is None:
+        return
+    n = match.confirmed
+    times = (f"confirmed on {n} earlier referral{'s' if n != 1 else ''}"
+             if n else "in the practice directory")
+    extracted = item.fields.get("gp_practice")
+    if not extracted:
+        note = (f"not readable on this referral — recognised by "
+                f"{match.matched_on}, {times}")
+    elif _same_name(extracted, match.name):
+        note = f"matches the practice directory ({times})"
+    else:
+        note = (f"the referral reads '{extracted}', but this practice — "
+                f"recognised by {match.matched_on} — was {times} as "
+                f"'{match.name}'; check it hasn't changed its name")
+    item.fields["gp_practice"] = match.name
+    item.confidence["gp_practice"] = "check"
+    item.notes["gp_practice"] = note
+
+
+def _same_name(a: str, b: str) -> bool:
+    import re
+
+    strip = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())  # noqa: E731
+    return strip(a) == strip(b)
+
 
 def _is_dry_run(body: Any) -> bool:
     return isinstance(body, dict) and bool(body.get("dry_run"))

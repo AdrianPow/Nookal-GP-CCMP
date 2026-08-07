@@ -71,6 +71,9 @@ class Referral:
     source: str = ""                     # 'digital' or 'ocr'
     pages: int = 0
     fields: dict[str, Field] = _field(default_factory=dict)
+    # The full extracted text, kept so the pipeline can pull practice
+    # identifiers from it. Never persisted — queue items store only fields.
+    text: str = ""
 
     def get(self, name: str) -> Any:
         f = self.fields.get(name)
@@ -816,4 +819,5 @@ def extract_fields(text: str) -> dict[str, Field]:
 
 def extract(path: str) -> Referral:
     text, source, pages = read_text(path)
-    return Referral(source=source, pages=pages, fields=extract_fields(text))
+    return Referral(source=source, pages=pages, fields=extract_fields(text),
+                    text=text)

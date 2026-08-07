@@ -204,6 +204,19 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self.queue.save(item)
 
+        if action in ("create", "create_anyway"):
+            # The reviewer has looked at the fields and committed to them —
+            # this is the moment the practice directory learns. Whatever
+            # they approved or corrected as the practice name is stored
+            # against this referral's phone/domain/provider-number keys, so
+            # the next referral from the same practice starts out right.
+            # Learned even if the Nookal create then fails: the failure
+            # says nothing about the practice name.
+            directory = getattr(self.server, "directory", None)
+            if directory is not None and item.fields.get("gp_practice"):
+                directory.learn(item.fields["gp_practice"],
+                                item.practice_keys)
+
         if action == "create_anyway":
             item.allow_duplicate_case = True
             self.queue.save(item)
@@ -453,12 +466,21 @@ def main() -> int:
     ap.add_argument("--rescan", type=int, default=60,
                     help="seconds between inbox re-scans (0 = only at start)")
     ap.add_argument("--config", default="nookal_config.json")
+    ap.add_argument("--practices", default="practices.json",
+                    help="the practice directory: referring practices "
+                         "learned from confirmed referrals")
     ap.add_argument("--dry-run", action="store_true",
                     help="review normally, but make every Nookal write a "
                          "logged no-op")
     args = ap.parse_args()
 
-    queue = Queue(args.queue)
+    from practice_directory import PracticeDirectory
+
+    directory = PracticeDirectory(args.practices)
+    if directory.records:
+        print(f"  {len(directory.records)} known practice(s) in "
+              f"{args.practices}")
+    queue = Queue(args.queue, directory=directory)
     added = scan_inbox(queue, args.inbox)
     if added:
         print(f"  read {added} new referral(s) from {args.inbox}/")
@@ -476,6 +498,7 @@ def main() -> int:
     server = ReviewServer(("127.0.0.1", args.port), Handler)
     server.queue = queue
     server.client = client
+    server.directory = directory
     if args.dry_run:
         print("  DRY RUN — nothing will be written to Nookal.")
     print(f"\n  Review screen: http://127.0.0.1:{args.port}\n"
