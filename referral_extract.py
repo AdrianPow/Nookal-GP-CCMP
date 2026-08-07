@@ -197,11 +197,20 @@ RE_PATIENT_LABELLED = re.compile(
     rf"Patient['’]?s?[ \t]+Name[ \t]*:?[ \t]*(?:{TITLES}\.?[ \t]+)?"
     r"([A-Z][A-Za-z'\-]+(?:[ \t]+[A-Z][A-Za-z'\-]+)+)")
 
-# The EPC form splits the name across two labelled boxes, which extract as
-# "First Name\nCheryl Surname Moss".
+# The EPC form splits the name across two labelled boxes. Where the boxes
+# fall relative to the line breaks depends on how wide the typed values are,
+# so all four arrangements turn up across one clinic's referrals:
+#
+#     First Name          First Name Jane     First Name Jane
+#     Cheryl Surname Moss Surname             Surname
+#                         Brooker             Brooker
+#
+# Each gap therefore tolerates a single newline. Only one: allowing more
+# would let the capture reach past an empty First Name box into the address.
+_GAP = r"[ \t]*\n?[ \t]*"
 RE_PATIENT_EPC = re.compile(
-    r"First[ \t]+Name[ \t]*:?[ \t]*\n?[ \t]*([A-Z][A-Za-z'\-]+)"
-    r"[ \t]+Surname[ \t]+([A-Z][A-Za-z'\-]+)")
+    r"First[ \t]+Name[ \t]*:?" + _GAP + r"(?!Surname\b)([A-Z][A-Za-z'\-]+)"
+    + _GAP + r"Surname[ \t]*:?" + _GAP + r"([A-Z][A-Za-z'\-]+)")
 
 # Accepts "Date of Birth:" as well as "DOB:", and tolerates text between the
 # label and the date — one form extracts as
@@ -211,13 +220,39 @@ RE_DOB = re.compile(
     r"(?:Date[ \t]+of[ \t]+Birth|\bD\.?O\.?B\.?)[ \t]*:?[^\d\n]{0,40}"
     r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{4}|\d{10})", re.I)
 RE_DATE_NUMERIC = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")
+
+# A ten-character run that might be DD/MM/YYYY with the separators mis-read.
+# The scanned EPC forms render "04/02/2025" as "04t02t2025" and, on the same
+# page, "04to2t2025". Matched loosely and checked for shape in
+# repair_ocr_date, which is far easier to follow than one regex doing both.
+DATE_CHARS = r"[\dOoDQlIi|SBZG/\-.tT]"
+RE_DATE_OCR = re.compile(rf"(?<![\w/\-])({DATE_CHARS}{{10}})(?![\w/\-])")
+
+# Only the unambiguous ones. 'a' also turns up for '0' on these scans
+# ("a410212025"), but that is a guess too far — and it does not need to be
+# made, because the same date appears elsewhere in the document in a form
+# that reads cleanly.
+OCR_DIGIT_LOOKALIKES = str.maketrans({
+    "O": "0", "o": "0", "D": "0", "Q": "0",
+    "l": "1", "I": "1", "i": "1", "|": "1",
+    "S": "5", "B": "8", "Z": "2", "G": "6",
+})
+# What a mis-read '/' can come out as. '1' is included because one practice's
+# PDFs render every separator as one; see repair_date_separators.
+DATE_SEPARATORS = set("/-.tT1lI|iu")
 RE_DATE_LONG = re.compile(
     r"\b(\d{1,2}\s+(?:January|February|March|April|May|June|July|August|"
     r"September|October|November|December)\s+\d{4})\b")
 
 # 6-digit stem + practice-location char + check char. Validated afterwards,
 # so a loose pattern is fine.
-RE_PROVIDER_CANDIDATE = re.compile(r"\b(\d{5,6}[0-9A-Z][A-Z])\b")
+#
+# The trailing characters are allowed to be separated by spaces: OCR reads
+# the boxed provider number on the scanned EPC forms as "5839741 H", and
+# without this the number is simply not found. A stray candidate picked up
+# by the looser pattern still has to pass the check character, which is a
+# 1-in-11 accident at worst.
+RE_PROVIDER_CANDIDATE = re.compile(r"\b(\d{5,6}[ \t]?[0-9A-Z][ \t]?[A-Z])\b")
 RE_TEN_DIGITS = re.compile(r"\b(\d{10})\b")
 RE_MEDICARE_LABELLED = re.compile(
     r"Medicare\s*(?:No|Number|#)?\.?:?\s*([\d\s]{10,14})", re.I)
@@ -251,6 +286,27 @@ SESSION_PATTERNS = [
 # The destination clinic appears in every referral's address block. Without
 # excluding it, it gets picked up as the *referring* practice.
 OWN_CLINIC_MARKERS = ("embrace movement",)
+
+# The EPC form has no letterhead at all — it is a Department of Health form,
+# so the referring practice is only ever in the 'GP details' block, as the
+# first line of that block's Address. Anchoring on the block is what tells
+# the referrer's address apart from the patient's and from ours, all three
+# of which are labelled 'Address' on the same page.
+# [\s\S] to cross line breaks in the run-up rather than re.S, which would
+# also let the captured line run to the end of the document.
+RE_GP_ADDRESS_BLOCK = re.compile(
+    r"GP[ \t]+details\b[\s\S]{0,400}?"
+    r"\bAddress[ \t]*:?[ \t]*\n[ \t]*(\S[^\n]*)", re.I)
+
+# Wording that reads like a letterhead but belongs to the printed form
+# rather than to any practice. The EPC form's second line — "Referral Form
+# for Allied Health Services under Medicare" — matched on 'Health' and was
+# returned as the referring practice on every referral of that type.
+FORM_TITLE_MARKERS = re.compile(
+    r"\b(referral form|enhanced primary care|allied health services?|"
+    r"team care arrangements?|gp management plan|multidisciplinary care|"
+    r"department of health|to be completed by|medicare claims?|"
+    r"private health insurance)\b", re.I)
 
 # A referral older than this, or dated in the future, is a mis-read rather
 # than a real date — one OCR run produced 1951 for a 2025 letter.
@@ -306,7 +362,9 @@ def find_medicare(text: str) -> Field:
 
 
 def find_provider(text: str) -> Field:
-    valid = [n for n in RE_PROVIDER_CANDIDATE.findall(text)
+    # Spaces are stripped after validating: the validator ignores them, but
+    # the value goes to Nookal and belongs there without them.
+    valid = [re.sub(r"\s+", "", n) for n in RE_PROVIDER_CANDIDATE.findall(text)
              if provider_number_valid(n)]
     unique = list(dict.fromkeys(valid))
     if len(unique) == 1:
@@ -383,6 +441,24 @@ def repair_date_separators(digits: str) -> Optional[str]:
     return f"{digits[:2]}/{digits[3:5]}/{digits[6:]}"
 
 
+def repair_ocr_date(run: str) -> Optional[str]:
+    """Recover DD/MM/YYYY from ten characters whose separators OCR mangled.
+
+    Shape is what makes this safe, not the characters: positions 2 and 5
+    must be separators and the other eight must read as digits. A phone
+    number, a Medicare number and an item number all carry a real digit at
+    position 2, so none of them can be mistaken for a date here.
+    """
+    if len(run) != 10:
+        return None
+    if run[2] not in DATE_SEPARATORS or run[5] not in DATE_SEPARATORS:
+        return None
+    digits = (run[:2] + run[3:5] + run[6:]).translate(OCR_DIGIT_LOOKALIKES)
+    if not digits.isdigit():
+        return None
+    return f"{digits[:2]}/{digits[2:4]}/{digits[4:]}"
+
+
 def find_dob(text: str) -> Field:
     match = RE_DOB.search(text)
     if not match:
@@ -418,26 +494,54 @@ def trim_name(name: str) -> str:
     return " ".join(words)
 
 
-def find_referral_date(text: str, dob: Optional[str]) -> Field:
-    """The letter date: the earliest date in the document that isn't the
-    patient's DOB. Ordered by position, not by format — one referral's
-    boilerplate footnote mentions "1 July 2025", and preferring long-form
-    dates picked that over the real letter date of 15/09/2025."""
-    head = text[:2500]
-    found = [(m.start(), m.group(1))
+def scan_for_dates(window: str, ocr_tolerant: bool) -> list[tuple[int, str, str]]:
+    """(position, date as DD/MM/YYYY, what the page actually said)."""
+    found = [(m.start(), m.group(1), m.group(1))
              for pattern in (RE_DATE_LONG, RE_DATE_NUMERIC)
-             for m in pattern.finditer(head)]
+             for m in pattern.finditer(window)]
+    if ocr_tolerant:
+        found += [(m.start(), repaired, m.group(1))
+                  for m in RE_DATE_OCR.finditer(window)
+                  if (repaired := repair_ocr_date(m.group(1)))]
+    return sorted(found)
+
+
+def find_referral_date(text: str, dob: Optional[str]) -> Field:
+    """The letter date: the earliest date that isn't the patient's DOB.
+
+    Two passes. The first reads only the head of the document, because on a
+    letter the date is at the top and the body is full of other dates.
+    Ordered by position, not by format — one referral's boilerplate footnote
+    mentions "1 July 2025", and preferring long-form dates picked that over
+    the real letter date of 15/09/2025.
+
+    The second pass runs only when the first finds nothing, and widens to
+    the whole document with OCR-mangled separators allowed. Referrals often
+    arrive as the last page or two of a scanned care-plan bundle: on one
+    eight-page bundle the signature date was on pages 7 and 8, thousands of
+    characters past the head, and read as "04t02t2025". Because this pass
+    only ever runs where the answer was previously 'no letter date found',
+    it cannot change what the first pass already gets right.
+    """
     today = _dt.date.today()
     rejected: list[str] = []
-    for _, raw in sorted(found):
-        iso = to_iso(raw)
-        if not iso or iso == dob:
-            continue
-        age = (today - _dt.date.fromisoformat(iso)).days
-        if age < 0 or age > MAX_REFERRAL_AGE_DAYS:
-            rejected.append(raw)
-            continue
-        return Field(iso, CHECK, f"read as {raw}")
+
+    for window, ocr_tolerant in ((text[:2500], False), (text, True)):
+        for _, raw, as_printed in scan_for_dates(window, ocr_tolerant):
+            iso = to_iso(raw)
+            if not iso or iso == dob:
+                continue
+            age = (today - _dt.date.fromisoformat(iso)).days
+            if age < 0 or age > MAX_REFERRAL_AGE_DAYS:
+                rejected.append(as_printed)
+                continue
+            if raw == as_printed:
+                return Field(iso, CHECK, f"read as {raw}")
+            return Field(iso, CHECK,
+                         f"the PDF gave '{as_printed}' with unreadable "
+                         f"separators; read as {raw} — CONFIRM against the "
+                         "referral")
+
     if rejected:
         return Field(None, MISSING, "only implausible dates found "
                                     f"({', '.join(rejected[:3])}) — likely "
@@ -452,7 +556,10 @@ def find_gp(text: str, provider: Optional[str]) -> Field:
     if not matches:
         return Field(None, MISSING, "no 'Dr ...' found")
     if provider:
-        anchor = text.find(provider)
+        # Whitespace-tolerant, because the provider number is stored with
+        # the OCR's spaces stripped and so no longer matches the page text.
+        found = re.search(r"[ \t]*".join(map(re.escape, provider)), text)
+        anchor = found.start() if found else -1
         if anchor != -1:
             nearest = min(matches, key=lambda m: abs(m.start() - anchor))
             return Field(f"Dr {trim_name(nearest.group(1))}", CHECK,
@@ -461,29 +568,49 @@ def find_gp(text: str, provider: Optional[str]) -> Field:
                  "first doctor named")
 
 
+PRACTICE_WORDS = re.compile(
+    r"(medical|clinic|practice|surgery|centre|center|doctors|health)", re.I)
+
+
+def looks_like_a_practice_name(line: str) -> bool:
+    """Shared by both routes below: is this line a practice name at all?"""
+    if len(line) < 6 or len(line) > 70 or line.lower().startswith("re:"):
+        return False
+    if line.endswith((".", ":", ",")) or line.count(" ") > 7:
+        return False          # prose, not a letterhead
+    low = line.lower()
+    if "@" in line or low.startswith(("www.", "http", "email", "phone",
+                                      "fax", "tel", "abn", "e:", "t:", "f:")):
+        return False          # contact details, not a practice name
+    # Compare with separators stripped: the clinic's own name appears as
+    # "Embrace Movement Clinic" and as "embracemovementclinic.com.au".
+    squashed = re.sub(r"[^a-z]", "", low)
+    if any(re.sub(r"[^a-z]", "", m) in squashed for m in OWN_CLINIC_MARKERS):
+        return False          # that is us, not the referrer
+    if FORM_TITLE_MARKERS.search(line):
+        return False          # the form's own wording, not a letterhead
+    return bool(PRACTICE_WORDS.search(line))
+
+
 def find_practice(text: str) -> Field:
-    """Letterheads sit in the first few lines. Searching the whole document
-    picked up prose like "All specialists and allied health professionals
-    have been chosen..." from deep in a care plan."""
+    """The 'GP details' address block first, then the letterhead.
+
+    The block is the stronger signal — it is labelled as the referrer's, so
+    it cannot be confused with the patient's address or ours — but only the
+    EPC-style forms have one. Letters carry a letterhead instead, and that
+    sits in the first few lines: searching the whole document picked up
+    prose like "All specialists and allied health professionals have been
+    chosen..." from deep in a care plan.
+    """
+    block = RE_GP_ADDRESS_BLOCK.search(text)
+    if block:
+        first = block.group(1).strip()
+        if looks_like_a_practice_name(first):
+            return Field(first, CHECK, "first line of the GP address block")
+
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:18]
     for line in lines:
-        if len(line) < 6 or len(line) > 70 or line.lower().startswith("re:"):
-            continue
-        if line.endswith((".", ":", ",")) or line.count(" ") > 7:
-            continue          # prose, not a letterhead
-        low = line.lower()
-        if "@" in line or low.startswith(("www.", "http", "email", "phone",
-                                          "fax", "tel", "abn", "e:", "t:",
-                                          "f:")):
-            continue          # contact details, not a practice name
-        # Compare with separators stripped: the clinic's own name appears as
-        # "Embrace Movement Clinic" and as "embracemovementclinic.com.au".
-        squashed = re.sub(r"[^a-z]", "", low)
-        if any(re.sub(r"[^a-z]", "", m) in squashed
-               for m in OWN_CLINIC_MARKERS):
-            continue          # that is us, not the referrer
-        if re.search(r"(medical|clinic|practice|surgery|centre|center|"
-                     r"doctors|health)", line, re.I):
+        if looks_like_a_practice_name(line):
             return Field(line, CHECK, "letterhead line near the top")
     return Field(None, MISSING, "no practice name found")
 

@@ -256,6 +256,112 @@ class NameTrimTests(unittest.TestCase):
         self.assertEqual(trim_name("Kym R. Horsnell"), "Kym R. Horsnell")
 
 
+class EpcFormLayoutTests(unittest.TestCase):
+    """The Department of Health EPC form, as pypdf extracts it. Where the
+    line breaks land inside the First Name / Surname boxes depends on how
+    wide the typed values are, and the form has no letterhead at all."""
+
+    EPC = ("Enhanced Primary Care (EPC) Program \n"
+           "Referral Form for Allied Health Services under Medicare \n"
+           "To be completed by referring GP\n"
+           "GP details\n"
+           "Provider Number 2202997K NOTE: Relevant MBS item(s) above must be\n"
+           "first referred allied health service for Medicare\n"
+           "Name\nDr Maya Venkatesh\n"
+           "Address\nBrendale Medical Centre\n249b Leitchs Road\n"
+           "Patient Details\nMedicare Number 2535664148\n"
+           "First Name Jane\nSurname \nBrooker\n"
+           "Address\n30 Fairlane Street\n"
+           "Allied Health Professional Embrace Movement Clinic\n"
+           " Date Signed: 17/06/2025\n")
+
+    def test_surname_on_its_own_line(self):
+        """"First Name Jane\\nSurname \\nBrooker" — the value fits beside its
+        label, so the break falls before the Surname box, not after it."""
+        self.assertEqual(extract_fields(self.EPC)["patient_name"].value,
+                         "Jane Brooker")
+
+    def test_the_other_box_arrangement_still_works(self):
+        text = "First Name\nCheryl Surname Moss\nAddress\n"
+        self.assertEqual(extract_fields(text)["patient_name"].value,
+                         "Cheryl Moss")
+
+    def test_an_empty_first_name_box_is_not_read_as_a_name(self):
+        text = "First Name\nSurname\nBrooker\n"
+        self.assertIsNone(extract_fields(text)["patient_name"].value)
+
+    def test_practice_comes_from_the_gp_address_block(self):
+        self.assertEqual(extract_fields(self.EPC)["gp_practice"].value,
+                         "Brendale Medical Centre")
+
+    def test_the_forms_own_title_is_not_the_practice(self):
+        """"Referral Form for Allied Health Services under Medicare" matched
+        on 'Health' and was returned as the referring practice."""
+        no_block = self.EPC.replace("GP details", "")
+        self.assertNotIn("Referral Form",
+                         str(extract_fields(no_block)["gp_practice"].value))
+
+    def test_the_patients_address_is_not_the_practice(self):
+        self.assertNotEqual(extract_fields(self.EPC)["gp_practice"].value,
+                            "30 Fairlane Street")
+
+    def test_a_real_letterhead_is_still_preferred_over_nothing(self):
+        fields = extract_fields("Old Northern Road Medical Centre\n"
+                                "Dr Kym R. Horsnell\n")
+        self.assertEqual(fields["gp_practice"].value,
+                         "Old Northern Road Medical Centre")
+
+
+class ScannedBundleTests(unittest.TestCase):
+    """An eight-page scanned care-plan bundle with the referral form as the
+    last two pages. Both fields the reviewer needed were past the head of
+    the document and had been through OCR."""
+
+    def test_provider_number_split_by_a_space(self):
+        """OCR reads the boxed number as "5839741 H"."""
+        field = find_provider("GP details\nProvider No.\n5839741 H\n")
+        self.assertEqual(field.value, "5839741H")
+        self.assertEqual(field.confidence, OK)
+
+    def test_provider_number_without_a_space_is_unchanged(self):
+        self.assertEqual(find_provider("Provider number:040501AW").value,
+                         "040501AW")
+
+    def test_date_beyond_the_head_of_a_long_bundle(self):
+        """The signature date sat on page 7 of 8, far past the 2500-char
+        window that the first pass reads."""
+        text = "Care plan.\n" + ("filler line\n" * 400) + "Date signed\n04/02/2025\n"
+        self.assertGreater(len(text), 2500)
+        self.assertEqual(find_referral_date(text, None).value, "2025-02-04")
+
+    def test_ocr_separators_read_as_letters(self):
+        text = "x" * 3000 + "\nDate signed\n04t02t2025\n"
+        field = find_referral_date(text, None)
+        self.assertEqual(field.value, "2025-02-04")
+        self.assertEqual(field.confidence, CHECK)
+        self.assertIn("CONFIRM", field.note)
+
+    def test_ocr_zero_read_as_the_letter_o(self):
+        text = "x" * 3000 + "\nDate signed\n04to2t2025\n"
+        self.assertEqual(find_referral_date(text, None).value, "2025-02-04")
+
+    def test_a_phone_number_is_not_read_as_a_date(self):
+        """Ten digits, but position 2 is a real digit, so it cannot be one."""
+        text = "x" * 3000 + "\nPhone\n0466590548\n"
+        self.assertIsNone(find_referral_date(text, None).value)
+
+    def test_a_medicare_number_is_not_read_as_a_date(self):
+        text = "x" * 3000 + "\nMedicare No.\n4207509012\n"
+        self.assertIsNone(find_referral_date(text, None).value)
+
+    def test_the_head_still_wins_when_it_has_a_date(self):
+        """The widened pass must not change a document the first pass reads:
+        the footnote date further down was the bug it was written for."""
+        text = ("RE: Mr Aiden Ward\n24 September 2025\n"
+                + "body line\n" * 400 + "downloaded 1 July 2025\n")
+        self.assertEqual(find_referral_date(text, None).value, "2025-09-24")
+
+
 class WholeReferralTests(unittest.TestCase):
     def test_letter_fields(self):
         fields = extract_fields(LETTER)
