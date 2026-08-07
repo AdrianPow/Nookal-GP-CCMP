@@ -11,8 +11,8 @@ import unittest
 
 from referral_extract import (CHECK, MISSING, OK, extract_fields,
                               find_medicare, find_provider, find_referral_date,
-                              find_sessions, text_layer_is_thin, to_iso,
-                              trim_name)
+                              find_sessions, practice_name_from_domain,
+                              text_layer_is_thin, to_iso, trim_name)
 
 # Shortened from A. Ward.pdf — narrative letter, provider number labelled.
 LETTER = """RE: Mr Aiden Ward (DOB: 04/05/1960)
@@ -360,6 +360,80 @@ class ScannedBundleTests(unittest.TestCase):
         text = ("RE: Mr Aiden Ward\n24 September 2025\n"
                 + "body line\n" * 400 + "downloaded 1 July 2025\n")
         self.assertEqual(find_referral_date(text, None).value, "2025-09-24")
+
+
+class GroupPracticeTests(unittest.TestCase):
+    """A scanned referral from an eleven-doctor practice. The letterhead
+    names every partner with their provider number, and OCR read the logo
+    and the address as one interleaved column."""
+
+    DAY = (
+        "tome A> Shop 5/272 Dohtes Rocks Read\n"
+        "[Al CASTLE HILL MURRUMBA DOWNS @4502\n"
+        "bik MEDICAL CENTRE P: 073886 5100\n"
+        "F: 073886 5300\n"
+        "E:  Infoacastlehillmedicaicentre.com\n"
+        "W. castehilimedicaicente.com\n"
+        "DR DUNCAN LYALL DR PETER BARTLETT DR GERALYN McCARRON\n"
+        "B.Sc., B.ECON. PROVIDER NO:2979223W PROVIDER NO: 0804844X\n"
+        "Dr BELINDA MCDONALD DR EMILY WATTERS DR ASHLEY ROSE\n"
+        "PROVIDER NO: 5590695B PROVIDER NO: 5778858B PROVIDER NO:5617349W\n"
+        "10/06/2025\n"
+        "Re: Team Care Arrangements for: Ms TANYA DAY16/09/1988\n"
+        "Yours sincerely\n"
+        "Dr Emily Watters\n"
+        "Provider No: 5778858B\n"
+        "GP details\n"
+        "Dr Emily Watters\n"
+        "Name\n"
+        "5/272 Dohles Rocks Rd\n"
+        "Address MURRUMBA DOWNS QLD 4503\n"
+        "Patient Details\n"
+        "Medicare Number 4334581426\n")
+
+    def test_the_signing_doctor_not_a_partner(self):
+        """Two accidents compounded: the first of eleven provider numbers
+        was taken, and the letterhead names are shouted, so the one partner
+        OCR happened to render as "Dr BELINDA MCDONALD" was the only match
+        near it."""
+        self.assertEqual(extract_fields(self.DAY)["gp_name"].value,
+                         "Dr Emily Watters")
+
+    def test_the_signing_doctors_provider_number(self):
+        fields = extract_fields(self.DAY)
+        self.assertEqual(fields["gp_provider_number"].value, "5778858B")
+        self.assertIn("nearest Dr Emily Watters",
+                      fields["gp_provider_number"].note)
+
+    def test_several_numbers_are_never_reported_as_certain(self):
+        self.assertEqual(
+            extract_fields(self.DAY)["gp_provider_number"].confidence, CHECK)
+
+    def test_practice_name_rebuilt_across_the_split_letterhead(self):
+        """No single line holds the name: "CASTLE HILL" and "MEDICAL
+        CENTRE" are on different lines, each interleaved with the address."""
+        self.assertEqual(extract_fields(self.DAY)["gp_practice"].value,
+                         "Castle Hill Medical Centre")
+
+    def test_the_domain_has_to_account_for_the_whole_name(self):
+        """Without a domain to confirm it, nothing is assembled — the
+        letterhead scan handles it instead, and gets what it gets."""
+        no_domain = "\n".join(ln for ln in self.DAY.splitlines()
+                              if "castlehill" not in ln.lower()
+                              and "castehili" not in ln.lower())
+        self.assertNotEqual(extract_fields(no_domain)["gp_practice"].value,
+                            "Castle Hill Medical Centre")
+
+    def test_our_own_domain_is_never_assembled(self):
+        """A partial assembly of "embracemovementclinic" reads as "Movement
+        Clinic", which no longer looks like us — so the domain is screened
+        out before anything is built from it."""
+        lines = ["Embrace Movement Clinic", "W: embracemovementclinic.com.au"]
+        self.assertIsNone(practice_name_from_domain(lines))
+
+    def test_a_single_provider_number_is_still_certain(self):
+        self.assertEqual(find_provider("Provider number:040501AW").confidence,
+                         OK)
 
 
 class WholeReferralTests(unittest.TestCase):

@@ -31,6 +31,7 @@ That is what makes OCR safe on the two highest-risk fields.
 from __future__ import annotations
 
 import datetime as _dt
+import difflib
 import re
 from dataclasses import dataclass, field as _field
 from typing import Any, Optional
@@ -298,6 +299,21 @@ RE_GP_ADDRESS_BLOCK = re.compile(
     r"GP[ \t]+details\b[\s\S]{0,400}?"
     r"\bAddress[ \t]*:?[ \t]*\n[ \t]*(\S[^\n]*)", re.I)
 
+RE_GP_DETAILS = re.compile(r"\bGP[ \t]+details\b", re.I)
+GP_DETAILS_WINDOW = 400
+
+# A practice web or email address. Requires a 7-character stem so that
+# health.gov.au, which appears in the EPC form's own footer, cannot match.
+RE_DOMAIN = re.compile(
+    r"\b([A-Za-z][A-Za-z0-9]{6,60})\.(?:com|net|org)(?:\.au)?\b", re.I)
+
+# How much of the domain the assembled name has to account for, and how
+# close a single word has to be to its slice of it. Both are deliberately
+# tight: the point of this route is that the domain *confirms* the name, so
+# a partial match is worth nothing.
+DOMAIN_COVERAGE = 0.85
+DOMAIN_WORD_SIMILARITY = 0.75
+
 # Wording that reads like a letterhead but belongs to the printed form
 # rather than to any practice. The EPC form's second line — "Referral Form
 # for Allied Health Services under Medicare" — matched on 'Health' and was
@@ -361,18 +377,35 @@ def find_medicare(text: str) -> Field:
                                 "it from the card")
 
 
-def find_provider(text: str) -> Field:
+def find_provider(text: str, near: Optional[str] = None) -> Field:
+    """`near` is the referring GP's name, when it is already known.
+
+    Group practices print every doctor's provider number in the letterhead
+    — one referral listed eleven — so "the only valid number in the
+    document" stops being a safe rule. Taking the first meant billing
+    against whichever partner happened to be top-left of the page. The one
+    printed beside the doctor who signed is the referral's.
+    """
     # Spaces are stripped after validating: the validator ignores them, but
     # the value goes to Nookal and belongs there without them.
-    valid = [re.sub(r"\s+", "", n) for n in RE_PROVIDER_CANDIDATE.findall(text)
-             if provider_number_valid(n)]
-    unique = list(dict.fromkeys(valid))
+    found = [(m.start(), re.sub(r"\s+", "", m.group(1)))
+             for m in RE_PROVIDER_CANDIDATE.finditer(text)
+             if provider_number_valid(m.group(1))]
+    unique = list(dict.fromkeys(n for _, n in found))
+    if not unique:
+        return Field(None, MISSING, "no valid provider number found")
     if len(unique) == 1:
         return Field(unique[0], OK, "check character valid")
-    if len(unique) > 1:
-        return Field(unique[0], CHECK,
-                     f"several found: {', '.join(unique)}")
-    return Field(None, MISSING, "no valid provider number found")
+
+    if near:
+        anchors = [m.start() for m in re.finditer(re.escape(near), text)]
+        if anchors:
+            _, number = min(found, key=lambda f: min(abs(f[0] - a)
+                                                     for a in anchors))
+            return Field(number, CHECK,
+                         f"{len(unique)} provider numbers on the referral; "
+                         f"this is the one printed nearest {near}")
+    return Field(unique[0], CHECK, f"several found: {', '.join(unique)}")
 
 
 def find_sessions(text: str) -> Field:
@@ -549,6 +582,28 @@ def find_referral_date(text: str, dob: Optional[str]) -> Field:
     return Field(None, MISSING, "no letter date found")
 
 
+def find_gp_in_block(text: str) -> Optional[Field]:
+    """The doctor named in the form's own 'GP details' box.
+
+    This is the only place on the page that is labelled as the *referring*
+    GP, which is what makes it worth checking before anything else. A group
+    practice's letterhead names every partner, so any rule that works
+    outwards from the letterhead is picking between colleagues by position
+    on the page rather than by role.
+    """
+    header = RE_GP_DETAILS.search(text)
+    if not header:
+        return None
+    region = text[header.end():header.end() + GP_DETAILS_WINDOW]
+    match = RE_GP.search(region)
+    if not match:
+        return None
+    name = trim_name(match.group(1))
+    if not name:
+        return None
+    return Field(f"Dr {name}", CHECK, "named in the form's 'GP details' box")
+
+
 def find_gp(text: str, provider: Optional[str]) -> Field:
     """Prefer the doctor named nearest the provider number — referrals often
     name several people, but only one signs."""
@@ -572,6 +627,13 @@ PRACTICE_WORDS = re.compile(
     r"(medical|clinic|practice|surgery|centre|center|doctors|health)", re.I)
 
 
+def is_our_own_clinic(line: str) -> bool:
+    """Compared with separators stripped: the clinic's own name appears as
+    "Embrace Movement Clinic" and as "embracemovementclinic.com.au"."""
+    squashed = re.sub(r"[^a-z]", "", line.lower())
+    return any(re.sub(r"[^a-z]", "", m) in squashed for m in OWN_CLINIC_MARKERS)
+
+
 def looks_like_a_practice_name(line: str) -> bool:
     """Shared by both routes below: is this line a practice name at all?"""
     if len(line) < 6 or len(line) > 70 or line.lower().startswith("re:"):
@@ -582,14 +644,92 @@ def looks_like_a_practice_name(line: str) -> bool:
     if "@" in line or low.startswith(("www.", "http", "email", "phone",
                                       "fax", "tel", "abn", "e:", "t:", "f:")):
         return False          # contact details, not a practice name
-    # Compare with separators stripped: the clinic's own name appears as
-    # "Embrace Movement Clinic" and as "embracemovementclinic.com.au".
-    squashed = re.sub(r"[^a-z]", "", low)
-    if any(re.sub(r"[^a-z]", "", m) in squashed for m in OWN_CLINIC_MARKERS):
+    if is_our_own_clinic(line):
         return False          # that is us, not the referrer
     if FORM_TITLE_MARKERS.search(line):
         return False          # the form's own wording, not a letterhead
     return bool(PRACTICE_WORDS.search(line))
+
+
+def assemble_against(stem: str, words: list[str]) -> tuple[list[str], int]:
+    """Consume `stem` left to right with `words`, in order, skipping any
+    that do not fit. Returns the words used and how much was consumed."""
+    picked: list[str] = []
+    pos = 0
+    for word in words:
+        if pos >= len(stem):
+            break
+        slice_ = stem[pos:pos + len(word)]
+        if len(slice_) < 3:
+            continue
+        # The word has to fit in what is left, give or take the one
+        # character OCR tends to drop. Without this the domain itself —
+        # which appears in the letterhead as a word — matches whatever
+        # remains of the stem and scores better than the real name.
+        if len(slice_) < len(word) - 1:
+            continue
+        if (difflib.SequenceMatcher(None, word.lower(), slice_).ratio()
+                >= DOMAIN_WORD_SIMILARITY):
+            picked.append(word)
+            pos += len(word)
+    return picked, min(pos, len(stem))
+
+
+def practice_name_from_domain(lines: list[str]) -> Optional[str]:
+    """Rebuild a practice name that OCR broke apart, using the practice's
+    own domain to prove the result.
+
+    Scanned letterheads put the logo and the address in two columns, and
+    OCR reads across both. One clinic's name came out split down two lines
+    and interleaved with its address:
+
+        [Al CASTLE HILL MURRUMBA DOWNS @4502
+        bik MEDICAL CENTRE P: 073886 5100
+
+    No line of that is the practice name, and picking the better-looking
+    one gives "MEDICAL CENTRE". But the same letterhead carries
+    "castlehillmedicaicentre.com", and walking that stem through the
+    letterhead's words in order — taking CASTLE, HILL, MEDICAL, CENTRE and
+    skipping MURRUMBA, DOWNS and the phone number — reassembles the name
+    and confirms it at the same time. Nothing is guessed: every word comes
+    off the page, and the domain decides which ones and in what order.
+    """
+    # Screen our own domain out here rather than on the assembled name: a
+    # partial assembly of "embracemovementclinic" comes out as "Movement
+    # Clinic", which no longer looks like us but still is.
+    stems = [m.group(1).lower() for line in lines
+             for m in RE_DOMAIN.finditer(line)
+             if not is_our_own_clinic(m.group(1))]
+    if not stems:
+        return None
+    words = [w for line in lines
+             for w in re.findall(r"[A-Za-z][A-Za-z'&\-]+", line)]
+
+    best: Optional[str] = None
+    # Coverage first, then word count: a domain read two ways can produce
+    # "Castle Hill Medical Centre" and "Hill Medical Centre" from the same
+    # letterhead, both accounting for all of their stem. The fuller name is
+    # the one on the page.
+    best_score = (0.0, 0)
+    for stem in stems:
+        # The stem may lead with an email local part — "info@" arrives as
+        # "infoa" once OCR has had the '@'. Try starting a little way in.
+        for start in range(min(11, len(stem))):
+            target = stem[start:]
+            picked, consumed = assemble_against(target, words)
+            score = (consumed / len(target) if target else 0, len(picked))
+            if len(picked) < 2 or score[0] < DOMAIN_COVERAGE:
+                continue
+            name = " ".join(picked)
+            if not PRACTICE_WORDS.search(name) or score <= best_score:
+                continue
+            best, best_score = name, score
+
+    if best is None:
+        return None
+    # Letterheads are set in capitals; the name is going into a patient
+    # record, so give it back in the case a human would write it.
+    return best.title() if best.isupper() else best
 
 
 def find_practice(text: str) -> Field:
@@ -609,6 +749,13 @@ def find_practice(text: str) -> Field:
             return Field(first, CHECK, "first line of the GP address block")
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:18]
+
+    from_domain = practice_name_from_domain(lines)
+    if from_domain and not is_our_own_clinic(from_domain):
+        return Field(from_domain, CHECK,
+                     "rebuilt from the letterhead and confirmed against the "
+                     "practice's own web address")
+
     for line in lines:
         if looks_like_a_practice_name(line):
             return Field(line, CHECK, "letterhead line near the top")
@@ -646,13 +793,19 @@ def find_conditions(text: str) -> Field:
 # --------------------------------------------------------------------------
 
 def extract_fields(text: str) -> dict[str, Field]:
-    provider = find_provider(text)
+    # Name first when the form labels it, so the provider number can be
+    # chosen by whose it is rather than by where it sits on the page. Only
+    # falls back to the old order — number first, then the doctor nearest
+    # it — on referrals that have no 'GP details' box to read.
+    named = find_gp_in_block(text)
+    provider = find_provider(text, near=named.value if named else None)
+    gp = named or find_gp(text, provider.value)
     dob = find_dob(text)
     return {
         "patient_name": find_patient(text),
         "dob": dob,
         "medicare_no": find_medicare(text),
-        "gp_name": find_gp(text, provider.value),
+        "gp_name": gp,
         "gp_provider_number": provider,
         "gp_practice": find_practice(text),
         "referral_date": find_referral_date(text, dob.value),
