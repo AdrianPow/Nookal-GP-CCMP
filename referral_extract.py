@@ -305,6 +305,23 @@ RE_GP_ADDRESS_BLOCK = re.compile(
 RE_GP_DETAILS = re.compile(r"\bGP[ \t]+details\b", re.I)
 GP_DETAILS_WINDOW = 400
 
+# Lines inside a GP address block that are not part of the street address.
+ADDRESS_JUNK = re.compile(r"^(ABN|ACN|Ph|Phone|Fax|Tel|Email|E:|W:|www\.)\b"
+                          r"|@", re.I)
+# A label means the block has ended — the next form field has started.
+ADDRESS_END = re.compile(r"^(Patient|Medicare|Provider|Name|NOTE|Allied|"
+                         r"First|Surname|Referral)\b", re.I)
+RE_POSTCODE_LINE = re.compile(r"\b\d{4}\s*$")
+
+STREET_WORDS = re.compile(
+    r"\b(Shop|Suite|Unit|Level|Rd|Road|St|Street|Drv|Drive|Ave|Avenue|"
+    r"Cl|Close|Ct|Court|Cres|Crescent|Pde|Parade|Hwy|Highway|Tce|Terrace|"
+    r"PO Box)\b", re.I)
+
+
+def looks_like_street_address(line: str) -> bool:
+    return bool(re.search(r"\d", line)) and bool(STREET_WORDS.search(line))
+
 # A practice web or email address. Requires a 7-character stem so that
 # health.gov.au, which appears in the EPC form's own footer, cannot match.
 RE_DOMAIN = re.compile(
@@ -735,7 +752,55 @@ def practice_name_from_domain(lines: list[str]) -> Optional[str]:
     return best.title() if best.isupper() else best
 
 
-def find_practice(text: str) -> Field:
+def gp_address_lines(text: str) -> list[str]:
+    """The street-address lines of the form's 'GP details' block.
+
+    Starts from the line the block regex captured and keeps going until a
+    postcode line, another form label, or three lines — whichever comes
+    first. ABN/phone/email lines in the middle are skipped: one form puts
+    the ABN between the street and the suburb."""
+    block = RE_GP_ADDRESS_BLOCK.search(text)
+    if not block:
+        return []
+    lines = text[block.start(1):].splitlines()
+    collected: list[str] = []
+    for line in lines:
+        line = " ".join(line.split())
+        if not line or ADDRESS_END.match(line):
+            break
+        if ADDRESS_JUNK.search(line):
+            continue
+        collected.append(line)
+        if RE_POSTCODE_LINE.search(line) or len(collected) == 3:
+            break
+    return collected
+
+
+def address_near_gp(text: str, gp_name: Optional[str]) -> list[str]:
+    """Street-address lines directly under the referring GP's name.
+
+    For scans where OCR has torn the form's labels away from their values,
+    so the labelled address block cannot be read — but the EPC forms print
+    the practice address immediately below the doctor's name, and that
+    ordering survives. Anchoring on the doctor keeps the patient's address
+    (which looks identical) out of reach."""
+    if not gp_name:
+        return []
+    for m in re.finditer(re.escape(gp_name), text):
+        collected: list[str] = []
+        for line in text[m.end():].splitlines()[1:4]:
+            line = " ".join(line.split())
+            if not looks_like_street_address(line):
+                break
+            collected.append(line)
+            if RE_POSTCODE_LINE.search(line):
+                break
+        if collected:
+            return collected
+    return []
+
+
+def find_practice(text: str, gp_name: Optional[str] = None) -> Field:
     """The 'GP details' address block first, then the letterhead.
 
     The block is the stronger signal — it is labelled as the referrer's, so
@@ -762,6 +827,19 @@ def find_practice(text: str) -> Field:
     for line in lines:
         if looks_like_a_practice_name(line):
             return Field(line, CHECK, "letterhead line near the top")
+
+    # Some forms never name the practice at all — the GP details block goes
+    # straight from the doctor's name to a street address. The address is
+    # still worth more than an empty field: it identifies the practice to
+    # anyone local, and once a reviewer confirms a referral from it with
+    # the real name typed in, the practice directory fills the name on
+    # every later referral from the same address.
+    address = gp_address_lines(text) or address_near_gp(text, gp_name)
+    if address and not is_our_own_clinic(" ".join(address)):
+        return Field(", ".join(address), CHECK,
+                     "no practice name on the referral — this is the "
+                     "practice's street address; type the name over it if "
+                     "you know it")
     return Field(None, MISSING, "no practice name found")
 
 
@@ -810,7 +888,7 @@ def extract_fields(text: str) -> dict[str, Field]:
         "medicare_no": find_medicare(text),
         "gp_name": gp,
         "gp_provider_number": provider,
-        "gp_practice": find_practice(text),
+        "gp_practice": find_practice(text, gp.value),
         "referral_date": find_referral_date(text, dob.value),
         "services_count": find_sessions(text),
         "conditions": find_conditions(text),

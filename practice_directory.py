@@ -36,8 +36,9 @@ from dataclasses import dataclass, field as _field
 from typing import Optional
 
 from nookal_client import provider_number_valid
-from referral_extract import (RE_DOMAIN, RE_GP_ADDRESS_BLOCK,
-                              RE_PROVIDER_CANDIDATE, is_our_own_clinic)
+from referral_extract import (RE_DOMAIN, RE_PROVIDER_CANDIDATE,
+                              gp_address_lines, is_our_own_clinic,
+                              looks_like_street_address)
 
 # Phone and fax numbers are read from the letterhead region only. Further
 # down the page the numbers belong to the patient, and a patient's home
@@ -111,12 +112,17 @@ def extract_practice_keys(text: str) -> dict[str, list[str]]:
                  for n in RE_PROVIDER_CANDIDATE.findall(text)
                  if provider_number_valid(n)]
 
+    # Only a line that actually reads as a street address becomes a key.
+    # On some scans the block's label sits next to another form label, and
+    # a generic line like 'Patient Details' stored as an address key would
+    # match every referral with the same degenerate layout to whichever
+    # practice was confirmed first.
     addresses = []
-    block = RE_GP_ADDRESS_BLOCK.search(text)
-    if block:
-        addr = normalise_address(block.group(1))
-        if len(addr) >= 8:
+    for line in gp_address_lines(text):
+        addr = normalise_address(line)
+        if len(addr) >= 8 and looks_like_street_address(line):
             addresses.append(addr)
+            break                      # the street line identifies the spot
 
     def unique(values: list[str]) -> list[str]:
         return list(dict.fromkeys(values))

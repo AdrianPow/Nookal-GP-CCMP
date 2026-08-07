@@ -68,10 +68,29 @@ class KeyExtractionTests(unittest.TestCase):
         self.assertNotIn("1234567X", keys["provider_numbers"])
 
     def test_the_gp_address_block_is_a_key(self):
-        text = ("GP details\nName\nDr Maya Venkatesh\n"
-                "Address\nBrendale Medical Centre\n")
+        text = ("GP details\nName\nDr Katya Groeneveld\n"
+                "Address\n2/956 Gympie Road\nABN: 41 107 480 400\n"
+                "CHERMSIDE  4032\n")
         keys = extract_practice_keys(text)
-        self.assertEqual(keys["addresses"], ["brendalemedicalcentre"])
+        self.assertEqual(keys["addresses"], ["2956gympieroad"])
+
+    def test_the_street_line_is_the_key_not_the_practice_name_line(self):
+        """Some blocks lead with the practice name; the street line below
+        it is what identifies the spot."""
+        text = ("GP details\nName\nDr Maya Venkatesh\nAddress\n"
+                "Brendale Medical Centre\n249b Leitchs Road\n"
+                "Brendale  4500\n")
+        keys = extract_practice_keys(text)
+        self.assertEqual(keys["addresses"], ["249bleitchsroad"])
+
+    def test_a_form_label_is_never_an_address_key(self):
+        """On some scans OCR tears the labels away from their values, so
+        the line after 'Address' is the next form label. Stored as a key,
+        'Patient Details' would match every referral with the same
+        degenerate layout to whichever practice was confirmed first."""
+        text = ("GP details\nProvider No.\nName\nAddress\n"
+                "Patient details\nMedicare No.\n")
+        self.assertEqual(extract_practice_keys(text)["addresses"], [])
 
 
 class DirectoryTests(unittest.TestCase):
@@ -201,6 +220,27 @@ class PipelineHookTests(unittest.TestCase):
         apply_practice_lookup(item, self.directory)
         self.assertIn("matches the practice directory",
                       item.notes["gp_practice"])
+
+    def test_an_address_fallback_is_a_fill_not_a_disagreement(self):
+        """When extraction fell back to the street address and the
+        directory knows who is at that address, the name simply fills in —
+        the note must not accuse the referral of 'reading' differently."""
+        self.directory.learn("Chermside Family Practice",
+                             {"phones": [], "domains": [],
+                              "provider_numbers": ["420427AA"],
+                              "addresses": ["2956gympieroad"]})
+        item = ReviewItem(
+            id="x", pdf_path="x",
+            fields={"gp_practice": "2/956 Gympie Road, CHERMSIDE 4032"},
+            practice_keys={"phones": [], "domains": [],
+                           "provider_numbers": ["420427AA"],
+                           "addresses": ["2956gympieroad"]})
+        apply_practice_lookup(item, self.directory)
+        self.assertEqual(item.fields["gp_practice"],
+                         "Chermside Family Practice")
+        self.assertIn("not readable on this referral",
+                      item.notes["gp_practice"])
+        self.assertNotIn("check it hasn't changed", item.notes["gp_practice"])
 
     def test_an_unknown_practice_is_left_alone(self):
         item = self.item(practice="Brendale Medical Centre",

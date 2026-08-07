@@ -436,6 +436,57 @@ class GroupPracticeTests(unittest.TestCase):
                          OK)
 
 
+class AddressFallbackTests(unittest.TestCase):
+    """Some forms never name the referring practice at all. The street
+    address is still worth more than an empty field, and the practice
+    directory can replace it with the real name later."""
+
+    MOSS = ("Enhanced Primary Care (EPC) Program \n"
+            "Referral Form for Allied Health Services under Medicare \n"
+            "GP details : \n"
+            "Provider Number 420427AA NOTE: Relevant MBS item(s)\n"
+            "Name\nDr Katya Groeneveld\n"
+            "Address\n2/956 Gympie Road\nABN: 41 107 480 400\n"
+            "CHERMSIDE  4032\n"
+            "Patient Details\nMedicare Number\n3349170497\n")
+
+    def test_address_used_when_no_name_exists(self):
+        field = extract_fields(self.MOSS)["gp_practice"]
+        self.assertEqual(field.value, "2/956 Gympie Road, CHERMSIDE 4032")
+        self.assertIn("street address", field.note)
+
+    def test_the_abn_line_is_not_part_of_the_address(self):
+        self.assertNotIn("ABN",
+                         extract_fields(self.MOSS)["gp_practice"].value)
+
+    def test_a_named_practice_is_never_displaced_by_its_address(self):
+        text = self.MOSS.replace("2/956 Gympie Road",
+                                 "Chermside Medical Centre\n"
+                                 "2/956 Gympie Road")
+        self.assertEqual(extract_fields(text)["gp_practice"].value,
+                         "Chermside Medical Centre")
+
+    def test_address_under_the_gp_name_when_labels_are_torn_away(self):
+        """OCR of the scanned EPC bundle reads all the labels in one column
+        and all the values in another, so the labelled block is unreadable
+        — but the address still sits directly under the doctor's name."""
+        text = ("GP details\nProvider No.\nName\nAddress\n"
+                "Patient details\nMedicare No.\n"
+                "5839741 H\nDr Gabriela Popa\n"
+                "Shop 2, 1 Queen Elizabeth Drv Eatons Hill QLD 4037\n")
+        field = extract_fields(text)["gp_practice"]
+        self.assertEqual(field.value,
+                         "Shop 2, 1 Queen Elizabeth Drv Eatons Hill QLD 4037")
+
+    def test_the_patients_address_is_out_of_reach(self):
+        """The patient's address looks identical — anchoring on the
+        doctor's name is what keeps it out."""
+        text = ("GP details\nName\nDr Gabriela Popa\nreferral text\n"
+                "Patient Details\nFirst Name Holly\n"
+                "9 Windrush Close Eatons Hill QLD 4037\n")
+        self.assertIsNone(extract_fields(text)["gp_practice"].value)
+
+
 class WholeReferralTests(unittest.TestCase):
     def test_letter_fields(self):
         fields = extract_fields(LETTER)

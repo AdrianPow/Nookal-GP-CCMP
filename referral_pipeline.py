@@ -204,6 +204,11 @@ def apply_practice_lookup(item: ReviewItem, directory) -> None:
     times = (f"confirmed on {n} earlier referral{'s' if n != 1 else ''}"
              if n else "in the practice directory")
     extracted = item.fields.get("gp_practice")
+    if extracted and _is_address_fallback(extracted, item.practice_keys):
+        # The extraction found no name and fell back to the street address.
+        # A directory hit means we know who is at that address — that is a
+        # fill, not a disagreement.
+        extracted = None
     if not extracted:
         note = (f"not readable on this referral — recognised by "
                 f"{match.matched_on}, {times}")
@@ -223,6 +228,20 @@ def _same_name(a: str, b: str) -> bool:
 
     strip = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())  # noqa: E731
     return strip(a) == strip(b)
+
+
+def _is_address_fallback(value: str, keys: dict) -> bool:
+    """Is this gp_practice value the street address the extraction fell
+    back to, rather than a name off the page? True when it contains one of
+    the referral's own address keys, or simply reads like a street
+    address — a real practice name never does."""
+    from practice_directory import normalise_address
+    from referral_extract import looks_like_street_address
+
+    squashed = normalise_address(value)
+    if any(k in squashed for k in keys.get("addresses", []) if k):
+        return True
+    return looks_like_street_address(value)
 
 
 def _is_dry_run(body: Any) -> bool:
